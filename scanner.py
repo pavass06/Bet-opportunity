@@ -187,34 +187,33 @@ def _build_sharp_reference(
             )
     references: Dict[Tuple[str, str], dict] = {}
     for key, entries in line_map.items():
-        if len(entries) != 2:
+        n = len(entries)
+        if n < 2:
             continue
-        first, second = entries
-        fair_a, fair_b, vig_percent = _remove_vig(first["price"], second["price"])
-        prob_a = 1 / fair_a if fair_a else 0.0
-        prob_b = 1 / fair_b if fair_b else 0.0
+        prices = [e["price"] for e in entries]
+        fair_list, vig_percent = _remove_vig_n(prices)
+        outcomes_dict = {}
+        for i, (e, fair) in enumerate(zip(entries, fair_list)):
+            prob = 1.0 / fair if fair > 0 else 0.0
+            if n == 2:
+                other = entries[1 - i]
+                opponent_odds = other["raw_price"]
+                opponent_name = other["display_name"]
+            else:
+                opponent_odds = None
+                opponent_name = ""
+            outcomes_dict[e["name"]] = {
+                "fair_odds": fair,
+                "true_probability": prob,
+                "sharp_odds": e["raw_price"],
+                "opponent_odds": opponent_odds,
+                "opponent_name": opponent_name,
+                "display_name": e["display_name"],
+                "point": e.get("point"),
+            }
         references[key] = {
             "vig_percent": round(vig_percent, 2),
-            "outcomes": {
-                first["name"]: {
-                    "fair_odds": fair_a,
-                    "true_probability": prob_a,
-                    "sharp_odds": first["raw_price"],
-                    "opponent_odds": second["raw_price"],
-                    "opponent_name": second["display_name"],
-                    "display_name": first["display_name"],
-                    "point": first.get("point"),
-                },
-                second["name"]: {
-                    "fair_odds": fair_b,
-                    "true_probability": prob_b,
-                    "sharp_odds": second["raw_price"],
-                    "opponent_odds": first["raw_price"],
-                    "opponent_name": first["display_name"],
-                    "display_name": second["display_name"],
-                    "point": second.get("point"),
-                },
-            },
+            "outcomes": outcomes_dict,
         }
     return references
 
@@ -245,6 +244,35 @@ def _two_way_outcomes(bookmaker: dict) -> Dict[Tuple[str, str], List[dict]]:
                 }
             )
     return {key: entries for key, entries in line_map.items() if len(entries) == 2}
+
+
+def _all_market_outcomes(bookmaker: dict) -> Dict[Tuple[str, str], List[dict]]:
+    """Like _two_way_outcomes but also includes 3-way markets (e.g. soccer h2h)."""
+    line_map: Dict[Tuple[str, str], List[dict]] = {}
+    for market in bookmaker.get("markets", []):
+        market_key = market.get("key")
+        if market_key not in ALLOWED_PLUS_EV_MARKETS:
+            continue
+        for outcome in market.get("outcomes", []):
+            price = outcome.get("price")
+            if not price or price <= 1:
+                continue
+            line_key = _line_key(market_key, outcome)
+            if not line_key:
+                continue
+            try:
+                display_price = float(price)
+            except (TypeError, ValueError):
+                continue
+            line_map.setdefault((market_key, line_key), []).append(
+                {
+                    "name": (outcome.get("name") or "").strip().lower(),
+                    "display_name": outcome.get("name") or "",
+                    "price": display_price,
+                    "point": outcome.get("point"),
+                }
+            )
+    return {key: entries for key, entries in line_map.items() if len(entries) >= 2}
 
 
 def _estimate_middle_probability(
@@ -604,7 +632,7 @@ def _collect_plus_ev_opportunities(
             continue
         bookmaker_title = book.get("title") or key
         is_exchange = key in EXCHANGE_KEYS
-        soft_lines = _two_way_outcomes(book)
+        soft_lines = _all_market_outcomes(book)
         if not soft_lines:
             continue
         for (market_key, line_key), entries in soft_lines.items():
@@ -1210,6 +1238,19 @@ def _remove_vig(odds_a: float, odds_b: float) -> Tuple[float, float, float]:
     fair_b = 1 / true_prob_b if true_prob_b else odds_b
     vig_percent = max(0.0, (total_implied - 1.0) * 100)
     return fair_a, fair_b, vig_percent
+
+
+def _remove_vig_n(prices: List[float]) -> Tuple[List[float], float]:
+    """Return fair odds for N outcomes plus vig percent."""
+    if not prices or any(p <= 1 for p in prices):
+        return prices, 0.0
+    implied = [1.0 / p for p in prices]
+    total = sum(implied)
+    if total <= 0:
+        return prices, 0.0
+    fair = [total / i for i in implied]
+    vig_percent = max(0.0, (total - 1.0) * 100)
+    return fair, vig_percent
 
 
 def _calculate_edge_percent(soft_odds: float, fair_odds: float) -> float:

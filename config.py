@@ -86,6 +86,7 @@ SPORT_DISPLAY_NAMES = {
     "soccer_italy_serie_a": "Serie A",
     "soccer_france_ligue_one": "Ligue 1",
     "soccer_usa_mls": "MLS",
+    "soccer_fifa_world_cup": "FIFA World Cup 2026",
 }
 
 AMERICAN_SPORTS = {
@@ -102,9 +103,11 @@ SOCCER_SPORTS = {
     "soccer_italy_serie_a",
     "soccer_france_ligue_one",
     "soccer_usa_mls",
+    "soccer_fifa_world_cup",
 }
 
 DEFAULT_SPORT_KEYS = [
+    "soccer_fifa_world_cup",
     "americanfootball_nfl",
     "basketball_nba",
     "baseball_mlb",
@@ -123,7 +126,7 @@ DEFAULT_SPORT_OPTIONS = [
 ]
 
 AMERICAN_MARKETS = ["h2h", "spreads", "totals"]
-SOCCER_MARKETS = ["spreads", "totals"]
+SOCCER_MARKETS = ["h2h", "spreads", "totals"]
 
 ROI_BANDS = [
     (0.0, 1.0, "0-1%"),
@@ -153,6 +156,32 @@ KELLY_OPTIONS = [
 ]
 
 SOFT_BOOK_KEYS = [
+    # EU / international (World Cup coverage)
+    "onexbet",
+    "williamhill",
+    "unibet_nl",
+    "unibet_se",
+    "unibet_fr",
+    "betsson",
+    "nordicbet",
+    "coolbet",
+    "pmu_fr",
+    "betclic_fr",
+    "winamax_fr",
+    "winamax_de",
+    "leovegas_se",
+    "tipico_de",
+    "marathonbet",
+    "sport888",
+    "betanything",
+    "mybookieag",
+    "betonlineag",
+    "codere_it",
+    "everygame",
+    "gtbets",
+    "betus",
+    "betanysports",
+    # US (kept for other sports)
     "draftkings",
     "fanduel",
     "betmgm",
@@ -163,7 +192,6 @@ SOFT_BOOK_KEYS = [
     "unibet",
     "888sport",
     "bovada",
-    "betonlineag",
     "lowvig",
     "williamhill_us",
     "betway",
