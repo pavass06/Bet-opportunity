@@ -22,9 +22,10 @@
 | Frontend | HTML/CSS/JS vanilla (Jinja2 pour le rendu serveur) |
 | Source de données | The Odds API v4 (`https://api.the-odds-api.com/v4`) |
 | Config | `.env` via `python-dotenv` (`ODDS_API_KEY`) |
-| Dépendances | `flask`, `requests`, `python-dotenv` (voir `requirements.txt`) |
+| Dépendances | `flask`, `requests`, `python-dotenv`, `apscheduler` (voir `requirements.txt`) |
 | Déploiement | Local uniquement — `python app.py` ouvre le navigateur automatiquement |
-| Persistance | **Aucune** — tout est en mémoire, rien n'est sauvegardé entre deux scans |
+| Persistance | SQLite (`data/edge_scanner.db`) via `db.py` — opportunités +EV sauvegardées à chaque scan |
+| Scheduler | APScheduler (background, daemon) — closing odds Pinnacle fetchés toutes les 30 min |
 
 ---
 
@@ -32,13 +33,17 @@
 
 ```
 edge-scanner/
-├── app.py          # Serveur Flask : routes / et /scan, parsing des paramètres UI
+├── app.py          # Serveur Flask : routes /, /scan, /history, /export, /clv-summary
 ├── scanner.py      # Logique métier : fetch API, calculs EV/arb/middles/+EV/Kelly
 ├── config.py       # Constantes : bookmakers, sports, marchés, Kelly options, EDGE_BANDS
+├── db.py           # Persistance SQLite : init, save_plus_ev, get_history, CLV summary, export CSV
+├── scheduler.py    # APScheduler : job closing odds Pinnacle toutes les 30 min
 ├── templates/
-│   └── index.html  # SPA : 3 onglets (Arbitrage / Middles / +EV), JS inline
+│   └── index.html  # SPA : 4 onglets (Arbitrage / Middles / +EV / History), JS inline
 ├── static/
 │   └── style.css   # CSS : dark/light theme, tables, cards, badges
+├── data/
+│   └── edge_scanner.db  # SQLite (créé automatiquement au premier lancement)
 ├── .env            # ODDS_API_KEY (non versionné)
 └── requirements.txt
 ```
@@ -90,13 +95,24 @@ edge-scanner/
 - Mise recommandée en dollars affichée dans le tableau +EV.
 
 ### Dashboard (✅ Implémenté)
-- 3 onglets : Arbitrage / Middles / +EV.
+- 4 onglets : Arbitrage / Middles / +EV / **History**.
 - Stat cards (nombre d'opportunités, events scannés, sports, API calls).
 - Bar charts par sport et par bande de ROI/edge.
 - Toggle cotes décimales / américaines (persisté dans `localStorage`).
 - Dark mode / Light mode (persisté dans `localStorage`).
 - Badge exchange + note de commission sur les opportunités impliquant Betfair/Matchbook.
 - Avertissement partiel si un sport échoue lors du fetch.
+
+### Persistance + CLV Tracking (✅ Implémenté)
+- Chaque opportunité +EV détectée est sauvegardée en SQLite (`data/edge_scanner.db`) via `db.py`.
+- Déduplication : une seule entrée par combinaison `(event, market, outcome, soft_book)` par jour calendaire.
+- APScheduler tourne en background (daemon, toutes les 30 min) et re-fetch la cote Pinnacle pour les événements qui démarrent dans la prochaine heure.
+- CLV calculé automatiquement : `CLV% = (soft_odds / closing_odds − 1) × 100`.
+- Onglet **History** dans l'UI : tableau de tous les bets trackés avec CLV en couleur (vert/rouge), stats agrégées (total, avg CLV, % CLV positif).
+- Endpoint `/export` : téléchargement CSV de tout l'historique.
+- Endpoint `/history` : JSON `{ rows, summary }` consommé par l'onglet History.
+- Endpoint `/clv-summary` : stats agrégées JSON.
+- **Contrainte** : le scheduler nécessite `ODDS_API_KEY` dans `.env` — si la clé est entrée uniquement dans l'UI, le closing odds job ne se déclenchera pas.
 
 ### Configuration disponible dans l'UI
 - Clé API (ou lecture depuis `.env`)
@@ -115,18 +131,17 @@ edge-scanner/
 
 ## CE QUE LE PRODUIT NE FAIT PAS (ROADMAP)
 
-### PRIORITÉ 1 — Persistance + Export CSV (prochaine phase)
-- [ ] Base de données (SQLite via SQLAlchemy) pour stocker les opportunités détectées
-- [ ] Historique des scans consultable dans l'UI (onglet "History")
-- [ ] Export CSV / JSON via bouton dans l'UI + endpoint `/export`
-- [ ] Sans cette phase, aucune validation quantitative de l'edge n'est possible
+### ~~PRIORITÉ 1 — Persistance + Export CSV~~ ✅ TERMINÉ
+- [x] SQLite (`data/edge_scanner.db`) via `db.py` — sauvegarde automatique à chaque scan
+- [x] Onglet History dans l'UI avec stats CLV agrégées
+- [x] Export CSV via `/export` + bouton dans l'UI
+- [x] APScheduler closing odds (30 min interval)
+- [x] CLV calculé automatiquement : `CLV% = (soft_odds / closing_odds − 1) × 100`
 
-### PRIORITÉ 2 — CLV Tracking (dépend de la Phase 1)
-- [ ] Enregistrer la cote prise + timestamp à chaque opportunité +EV
-- [ ] Re-fetch la cote de clôture (Pinnacle) 1h avant le match via APScheduler
-- [ ] Calculer `CLV% = (closing_odds / odds_taken − 1) × 100`
-- [ ] Rapport CLV dans l'onglet History
-- [ ] Brier score de calibration (à partir des résultats réels saisis manuellement)
+### PRIORITÉ 2 — Brier Score + Résultats manuels (prochaine phase)
+- [ ] Ajouter colonne `result` (0/1) saisie manuellement dans l'UI pour chaque bet
+- [ ] Calculer le Brier score : `AVG((predicted_prob - result)²)` sur les bets avec résultat
+- [ ] Afficher le Brier score dans le dashboard History
 
 ### PRIORITÉ 3 — Alertes Telegram
 - [ ] Bot Telegram via `python-telegram-bot` ou appel direct `requests`
@@ -237,11 +252,11 @@ python app.py --port 8080
 
 | Critère | Seuil cible | Statut actuel |
 |---|---|---|
-| CLV moyen sur 100+ paris | > 0% | Non mesuré (pas de persistance) |
+| CLV moyen sur 100+ paris | > 0% | En cours de mesure (persistance opérationnelle) |
 | ROI simulé sur 50+ arbs | > 0.5% après commission | Non mesuré |
 | Précision middles (Brier score) | < 0.25 | Non mesuré |
 | Taux de faux positifs arb | < 10% | Non mesuré |
 
 ---
 
-*Dernière mise à jour : 2026-06-24 — État initial post-fork, MVP fonctionnel.*
+*Dernière mise à jour : 2026-06-24 — Persistance SQLite + CLV tracking implémentés (Phase 1 & 2).*

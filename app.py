@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from config import (
     DEFAULT_BANKROLL,
@@ -23,7 +23,9 @@ from config import (
     REGION_OPTIONS,
     SHARP_BOOKS,
 )
+from db import export_csv, get_clv_summary, get_history, init_db, save_plus_ev_opportunities
 from scanner import run_scan
+from scheduler import start_scheduler, stop_scheduler
 
 load_dotenv()
 
@@ -84,7 +86,7 @@ def scan() -> tuple:
     except (TypeError, ValueError):
         stake_value = 100.0
     if isinstance(regions, list):
-        regions_value = [str(region) for region in regions if isinstance(region, str)]
+        regions_value = [str(r) for r in regions if isinstance(r, str)]
     else:
         regions_value = None
     try:
@@ -106,8 +108,38 @@ def scan() -> tuple:
         bankroll=bankroll_value,
         kelly_fraction=kelly_fraction,
     )
+    if result.get("success"):
+        opps = (result.get("plus_ev") or {}).get("opportunities") or []
+        saved = save_plus_ev_opportunities(opps)
+        result["saved_count"] = saved
     status = 200 if result.get("success") else result.get("error_code", 500)
     return jsonify(result), status
+
+
+@app.route("/history")
+def history() -> tuple:
+    try:
+        limit = int(request.args.get("limit", 500))
+    except (TypeError, ValueError):
+        limit = 500
+    rows = get_history(limit=limit)
+    summary = get_clv_summary()
+    return jsonify({"rows": rows, "summary": summary}), 200
+
+
+@app.route("/export")
+def export() -> Response:
+    csv_data = export_csv()
+    return Response(
+        csv_data,
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=edge_scanner_history.csv"},
+    )
+
+
+@app.route("/clv-summary")
+def clv_summary() -> tuple:
+    return jsonify(get_clv_summary()), 200
 
 
 def _port_available(port: int) -> bool:
@@ -135,7 +167,7 @@ def _choose_port(preferred: Optional[int]) -> int:
         seen.add(port)
         if _port_available(port):
             return port
-    return 0  # fall back to OS-chosen port
+    return 0
 
 
 def open_browser(port: int) -> None:
@@ -147,16 +179,14 @@ def ensure_data_dir() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sports Arbitrage Scanner server")
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Port to run the local server on (default 5000, auto-fallback if busy)",
-    )
+    parser = argparse.ArgumentParser(description="Edge Scanner server")
+    parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args()
 
     ensure_data_dir()
+    init_db()
+    start_scheduler()
+
     port = _choose_port(args.port)
     if port > 0:
         timer = threading.Timer(1.0, open_browser, args=(port,))
@@ -166,6 +196,7 @@ def main() -> None:
     try:
         app.run(port=port or 0, debug=False)
     finally:
+        stop_scheduler()
         if timer:
             timer.cancel()
 

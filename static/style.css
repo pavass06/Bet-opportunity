@@ -619,3 +619,32 @@ main {
   background: rgba(148, 163, 184, 0.3);
   color: #475569;
 }
+
+.export-btn {
+  font-size: 0.85rem;
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0.25rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.export-btn:hover {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+.gain {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.loss {
+  color: var(--error);
+  font-weight: 600;
+}

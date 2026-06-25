@@ -95,6 +95,7 @@
       <button type="button" class="tab-btn active" data-tab="arbitrage">Arbitrage</button>
       <button type="button" class="tab-btn" data-tab="middles">Middles</button>
       <button type="button" class="tab-btn" data-tab="plus-ev">+EV</button>
+      <button type="button" class="tab-btn" data-tab="history">History</button>
     </nav>
 
     <section class="card middle-config hidden" id="middles-config">
@@ -372,6 +373,61 @@
         <p><strong>Understanding +EV Betting:</strong> Sharp books (Pinnacle, Betfair, Matchbook) provide near "true" odds. When a soft book posts a higher price than fair value, the bet has positive expected value. +EV bets still lose roughly half the time—the edge shows up over many wagers. Kelly staking helps size bets, but variance can still be high. Always confirm odds before betting; edges disappear quickly.</p>
       </section>
     </section>
+    <section id="history-panel" class="hidden">
+      <section class="stats-row">
+        <div class="stat-card">
+          <span class="stat-label">Bets Tracked</span>
+          <span class="stat-value" id="hist-total">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">With CLV</span>
+          <span class="stat-value" id="hist-with-clv">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Avg CLV</span>
+          <span class="stat-value" id="hist-avg-clv">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">CLV &gt; 0</span>
+          <span class="stat-value" id="hist-pct-positive">—</span>
+        </div>
+      </section>
+
+      <section class="card summary-info" id="hist-clv-explain">
+        <p><strong>CLV (Closing Line Value)</strong> mesure si tu as obtenu une meilleure cote que la cote de fermeture Pinnacle. CLV &gt; 0% signifie que tu as devancé le marché — indicateur que le modèle détecte de la vraie valeur. Objectif : CLV moyen &gt; 0% sur 100+ paris trackés.</p>
+      </section>
+
+      <section class="card results-card">
+        <div class="card-head">
+          <h3>Opportunités +EV trackées</h3>
+          <div class="table-meta">
+            <span id="hist-table-count">—</span>
+            <a href="/export" class="export-btn">⬇ Export CSV</a>
+          </div>
+        </div>
+        <div id="hist-loading" class="empty">Chargement…</div>
+        <table id="history-table" class="hidden">
+          <thead>
+            <tr>
+              <th>Détecté</th>
+              <th>Événement</th>
+              <th>Sport</th>
+              <th>Marché</th>
+              <th>Sélection</th>
+              <th>Book</th>
+              <th>Cote prise</th>
+              <th>Fair odds</th>
+              <th>Edge</th>
+              <th>Cote closing</th>
+              <th>CLV</th>
+              <th>Début</th>
+            </tr>
+          </thead>
+          <tbody id="hist-body"></tbody>
+        </table>
+        <div id="hist-empty" class="empty hidden">Aucun bet tracké pour l'instant. Lance un scan pour commencer.</div>
+      </section>
+    </section>
   </main>
 
   <script>
@@ -414,6 +470,7 @@
     const arbitragePanel = document.getElementById('arbitrage-panel');
     const middlesPanel = document.getElementById('middles-panel');
     const plusEvPanel = document.getElementById('plus-ev-panel');
+    const historyPanel = document.getElementById('history-panel');
     const middlesConfig = document.getElementById('middles-config');
     const plusEvConfig = document.getElementById('plus-ev-config');
     const minGapInput = document.getElementById('min-gap-input');
@@ -1057,15 +1114,81 @@
       arbitragePanel.classList.toggle('hidden', tab !== 'arbitrage');
       middlesPanel.classList.toggle('hidden', tab !== 'middles');
       plusEvPanel.classList.toggle('hidden', tab !== 'plus-ev');
+      historyPanel.classList.toggle('hidden', tab !== 'history');
       middlesConfig.classList.toggle('hidden', tab !== 'middles');
       plusEvConfig.classList.toggle('hidden', tab !== 'plus-ev');
       if (tab === 'arbitrage') {
         renderArbitrage();
       } else if (tab === 'middles') {
         renderMiddles();
-      } else {
+      } else if (tab === 'plus-ev') {
         renderPlusEv();
+      } else if (tab === 'history') {
+        loadHistory();
       }
+    }
+
+    async function loadHistory() {
+      const loadingEl = document.getElementById('hist-loading');
+      const tableEl = document.getElementById('history-table');
+      const emptyEl = document.getElementById('hist-empty');
+      loadingEl.classList.remove('hidden');
+      tableEl.classList.add('hidden');
+      emptyEl.classList.add('hidden');
+      try {
+        const res = await fetch('/history?limit=500');
+        const data = await res.json();
+        renderHistory(data);
+      } catch (err) {
+        loadingEl.textContent = 'Erreur de chargement.';
+      }
+    }
+
+    function renderHistory(data) {
+      const loadingEl = document.getElementById('hist-loading');
+      const tableEl = document.getElementById('history-table');
+      const emptyEl = document.getElementById('hist-empty');
+      const body = document.getElementById('hist-body');
+      const summary = data.summary || {};
+      const rows = data.rows || [];
+
+      document.getElementById('hist-total').textContent = summary.total ?? 0;
+      document.getElementById('hist-with-clv').textContent = summary.with_clv ?? 0;
+      document.getElementById('hist-avg-clv').textContent =
+        summary.avg_clv != null ? formatPercent(summary.avg_clv) : '—';
+      document.getElementById('hist-pct-positive').textContent =
+        summary.pct_positive_clv != null ? `${summary.pct_positive_clv}%` : '—';
+      document.getElementById('hist-table-count').textContent = `${rows.length} entrées`;
+
+      loadingEl.classList.add('hidden');
+      if (!rows.length) {
+        emptyEl.classList.remove('hidden');
+        return;
+      }
+      body.innerHTML = '';
+      rows.forEach((row) => {
+        const tr = document.createElement('tr');
+        const clv = row.clv_percent;
+        if (clv != null) tr.classList.add(clv > 0 ? 'band-warm' : 'roi-negative');
+        const detectedAt = row.detected_at ? new Date(row.detected_at).toLocaleString() : '—';
+        const commenceTime = row.commence_time ? new Date(row.commence_time).toLocaleString() : '—';
+        tr.innerHTML = `
+          <td class="mono">${detectedAt}</td>
+          <td>${row.event || '—'}</td>
+          <td>${row.sport || '—'}</td>
+          <td>${row.market || '—'}</td>
+          <td><strong>${row.outcome || '—'}</strong></td>
+          <td>${row.soft_book || '—'}</td>
+          <td class="mono">${row.soft_odds != null ? Number(row.soft_odds).toFixed(2) : '—'}</td>
+          <td class="mono">${row.fair_odds != null ? Number(row.fair_odds).toFixed(2) : '—'}</td>
+          <td>${row.edge_percent != null ? formatPercent(row.edge_percent) : '—'}</td>
+          <td class="mono">${row.closing_odds != null ? Number(row.closing_odds).toFixed(2) : '<span class="muted">en attente</span>'}</td>
+          <td>${clv != null ? `<span class="${clv > 0 ? 'gain' : 'loss'}">${formatPercent(clv)}</span>` : '<span class="muted">—</span>'}</td>
+          <td class="mono">${commenceTime}</td>
+        `;
+        body.appendChild(tr);
+      });
+      tableEl.classList.remove('hidden');
     }
 
     function formatGapCell(opp) {
