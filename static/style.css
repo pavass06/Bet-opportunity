@@ -682,3 +682,126 @@ main {
   border-color: var(--error);
   color: #fff;
 }
+
+.builder-run-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.builder-run-btn:hover {
+  opacity: 0.9;
+}
+
+.builder-meta {
+  margin: 0.25rem 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.builder-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 1rem;
+}
+
+.parlay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.parlay-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--card-border);
+  padding-bottom: 0.5rem;
+}
+
+.parlay-book {
+  font-size: 0.95rem;
+}
+
+.parlay-odds {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.parlay-legs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.parlay-legs li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.parlay-leg-main {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.parlay-leg-main .muted {
+  font-size: 0.78rem;
+}
+
+.parlay-leg-odds {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.25;
+}
+
+.parlay-leg-odds .muted {
+  font-size: 0.78rem;
+}
+
+.parlay-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--card-border);
+}
+
+.parlay-metrics > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.metric-value {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.parlay-compare {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  line-height: 1.4;
+}
+

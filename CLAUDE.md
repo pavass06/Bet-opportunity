@@ -39,7 +39,7 @@ edge-scanner/
 ├── db.py           # Persistance SQLite : init, save_plus_ev, get_history, CLV summary, export CSV
 ├── scheduler.py    # APScheduler : job closing odds Pinnacle toutes les 30 min
 ├── templates/
-│   └── index.html  # SPA : 4 onglets (Arbitrage / Middles / +EV / History), JS inline
+│   └── index.html  # SPA : 5 onglets (Arbitrage / Middles / +EV / Builder / History), JS inline
 ├── static/
 │   └── style.css   # CSS : dark/light theme, tables, cards, badges
 ├── data/
@@ -95,13 +95,21 @@ edge-scanner/
 - Mise recommandée en dollars affichée dans le tableau +EV.
 
 ### Dashboard (✅ Implémenté)
-- 4 onglets : Arbitrage / Middles / +EV / **History**.
+- 5 onglets : Arbitrage / Middles / +EV / **Builder** / **History**.
 - Stat cards (nombre d'opportunités, events scannés, sports, API calls).
 - Bar charts par sport et par bande de ROI/edge.
 - Toggle cotes décimales / américaines (persisté dans `localStorage`).
 - Dark mode / Light mode (persisté dans `localStorage`).
 - Badge exchange + note de commission sur les opportunités impliquant Betfair/Matchbook.
 - Avertissement partiel si un sport échoue lors du fetch.
+
+### Parlay / Combiné Builder (✅ Implémenté)
+- S'appuie sur les +EV du dernier scan, côté client, sans nouvelle requête API.
+- Construit les combinés à partir d'un seul bookmaker par ticket, avec une contrainte dure de cote produit min/max.
+- Exclut toute paire de jambes provenant du même match pour limiter la corrélation.
+- Trie les combinés par edge compound, puis par probabilité de hit.
+- Affiche la cote fair du combiné, l'EV composé, la probabilité de hit, la mise Kelly recommandée et une comparaison face aux mêmes jambes jouées en simples.
+- Paramètres visibles dans l'UI : cote combinée min/max et nombre maximal de jambes.
 
 ### Persistance + CLV Tracking (✅ Implémenté)
 - Chaque opportunité +EV détectée est sauvegardée en SQLite (`data/edge_scanner.db`) via `db.py`.
@@ -167,10 +175,10 @@ _Note : remplacé par la section ci-dessus « Résultats manuels + Brier + ROI r
 - [ ] `setInterval(() => form.submit(), N * 60 * 1000)`
 
 ### PRIORITÉ 5 — Parlay / Combiné Builder
-- [ ] Calcul du `log_edge = ln(true_prob × soft_odds)` pour chaque +EV single
-- [ ] Nouvel onglet "Builder" avec input fourchette de cote cible [min, max]
-- [ ] Algorithme combinatoire (N ≤ 6 jambes) qui maximise la somme des log-edges sous contrainte de cote produit
-- [ ] Avertissement de corrélation si deux jambes proviennent du même match
+- [x] Calcul du `log_edge = ln(true_prob × soft_odds)` pour chaque +EV single
+- [x] Nouvel onglet "Builder" avec input fourchette de cote cible [min, max]
+- [x] Algorithme combinatoire (N ≤ 6 jambes) qui maximise la somme des log-edges sous contrainte de cote produit
+- [x] Avertissement de corrélation si deux jambes proviennent du même match
 
 ### PRIORITÉ 6 — Soft Arb < 103%
 - [ ] Détecter les "near-arbs" où `sum(implied) < 1.03` sans être < 1.00
@@ -272,4 +280,4 @@ python app.py --port 8080
 
 ---
 
-*Dernière mise à jour : 2026-06-30 — Résultats manuels (Win/Loss) + Brier score + ROI réalisé + Win rate vs attendu (Phase 2).*
+*Dernière mise à jour : 2026-06-30 — Résultats manuels (Win/Loss) + Brier score + ROI réalisé + Win rate vs attendu (Phase 2) + Parlay Builder (Phase 5).* 

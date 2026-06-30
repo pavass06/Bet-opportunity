@@ -95,6 +95,7 @@
       <button type="button" class="tab-btn active" data-tab="arbitrage">Arbitrage</button>
       <button type="button" class="tab-btn" data-tab="middles">Middles</button>
       <button type="button" class="tab-btn" data-tab="plus-ev">+EV</button>
+      <button type="button" class="tab-btn" data-tab="builder">Builder</button>
       <button type="button" class="tab-btn" data-tab="history">History</button>
     </nav>
 
@@ -160,6 +161,31 @@
             <option value="kelly">Kelly stake</option>
             <option value="time">Event time</option>
           </select>
+        </div>
+      </div>
+    </section>
+
+    <section class="card builder-config hidden" id="builder-config">
+      <div class="plus-config-grid">
+        <div class="field">
+          <label class="field-label">Cote combinée min</label>
+          <input type="number" id="builder-min-odds" min="1" step="0.5" value="3.0" />
+          <p class="helper">Cote produit décimale minimale du ticket.</p>
+        </div>
+        <div class="field">
+          <label class="field-label">Cote combinée max</label>
+          <input type="number" id="builder-max-odds" min="1" step="0.5" value="10.0" />
+          <p class="helper">Cote produit décimale maximale du ticket.</p>
+        </div>
+        <div class="field">
+          <label class="field-label">Jambes max</label>
+          <input type="number" id="builder-max-legs" min="2" max="6" step="1" value="4" />
+          <p class="helper">Entre 2 et 6 sélections par combiné.</p>
+        </div>
+        <div class="field">
+          <label class="field-label">&nbsp;</label>
+          <button type="button" class="builder-run-btn" id="builder-run">Construire</button>
+          <p class="helper">Combinés construits depuis le dernier scan +EV.</p>
         </div>
       </div>
     </section>
@@ -373,6 +399,14 @@
         <p><strong>Understanding +EV Betting:</strong> Sharp books (Pinnacle, Betfair, Matchbook) provide near "true" odds. When a soft book posts a higher price than fair value, the bet has positive expected value. +EV bets still lose roughly half the time—the edge shows up over many wagers. Kelly staking helps size bets, but variance can still be high. Always confirm odds before betting; edges disappear quickly.</p>
       </section>
     </section>
+    <section id="builder-panel" class="hidden">
+      <section class="card summary-info" id="builder-explain">
+        <p><strong>Combiné Builder</strong> — construit les meilleurs combinés à partir de tes +EV du dernier scan. Contraintes : toutes les jambes chez le <strong>même book</strong> (un combiné = un seul ticket), jamais deux jambes du <strong>même match</strong>, cote produit dans ta fourchette. Classé par edge compound. ⚠️ Un combiné a un edge plus élevé mais un taux de réussite bien plus bas : compare toujours avec la version « singles » avant de parier.</p>
+      </section>
+      <div id="builder-meta" class="table-meta builder-meta"></div>
+      <div id="builder-results" class="builder-results"></div>
+      <div id="builder-empty" class="empty">Lance d'abord un scan +EV, puis reviens ici.</div>
+    </section>
     <section id="history-panel" class="hidden">
       <section class="stats-row">
         <div class="stat-card">
@@ -492,6 +526,12 @@
     const middlesPanel = document.getElementById('middles-panel');
     const plusEvPanel = document.getElementById('plus-ev-panel');
     const historyPanel = document.getElementById('history-panel');
+    const builderPanel = document.getElementById('builder-panel');
+    const builderConfig = document.getElementById('builder-config');
+    const builderMinOdds = document.getElementById('builder-min-odds');
+    const builderMaxOdds = document.getElementById('builder-max-odds');
+    const builderMaxLegs = document.getElementById('builder-max-legs');
+    const builderRun = document.getElementById('builder-run');
     const middlesConfig = document.getElementById('middles-config');
     const plusEvConfig = document.getElementById('plus-ev-config');
     const minGapInput = document.getElementById('min-gap-input');
@@ -631,9 +671,11 @@
     positiveEvToggle.addEventListener('change', () => renderMiddles());
     middleSortSelect.addEventListener('change', () => renderMiddles());
     minEdgeInput.addEventListener('input', () => renderPlusEv());
-    bankrollInput.addEventListener('input', () => renderPlusEv());
-    kellySelect.addEventListener('change', () => renderPlusEv());
+    bankrollInput.addEventListener('input', () => { renderPlusEv(); renderBuilder(); });
+    kellySelect.addEventListener('change', () => { renderPlusEv(); renderBuilder(); });
     plusEvSortSelect.addEventListener('change', () => renderPlusEv());
+    [builderMinOdds, builderMaxOdds, builderMaxLegs].forEach((el) => el.addEventListener('input', () => renderBuilder()));
+    builderRun.addEventListener('click', () => renderBuilder());
 
     async function runScan(payload) {
       setScanning(true);
@@ -1010,6 +1052,148 @@
       return `<span class="outcome">${exchangeBadge}<strong>${opp.bet.outcome || ''}${point}</strong><span>${book}</span></span>`;
     }
 
+    function builderPool() {
+      const opps = lastScanData?.plus_ev?.opportunities || [];
+      // Exchanges don't offer parlays; require a real soft book and valid prob/odds.
+      return opps.filter((o) => {
+        const odds = oppEffectiveOdds(o);
+        const p = oppTrueProb(o);
+        return o.bet && !o.bet.is_exchange && o.bet.soft_book && odds > 1 && p > 0 && p < 1;
+      });
+    }
+
+    function buildParlays() {
+      const minOdds = parseFloat(builderMinOdds.value) || 0;
+      const maxOdds = parseFloat(builderMaxOdds.value) || Infinity;
+      const maxLegs = Math.min(6, Math.max(2, parseInt(builderMaxLegs.value, 10) || 4));
+      const PER_BOOK_CAP = 12;
+      const TOP_K = 10;
+
+      const pool = builderPool();
+      const byBook = {};
+      pool.forEach((o) => {
+        (byBook[o.bet.soft_book] = byBook[o.bet.soft_book] || []).push(o);
+      });
+
+      const results = [];
+      let truncated = false;
+      let combinableBooks = 0;
+
+      Object.entries(byBook).forEach(([book, legsAll]) => {
+        if (legsAll.length < 2) return;
+        combinableBooks += 1;
+        const sorted = legsAll.slice().sort((a, b) => (b.edge_percent || 0) - (a.edge_percent || 0));
+        if (sorted.length > PER_BOOK_CAP) truncated = true;
+        const legs = sorted.slice(0, PER_BOOK_CAP);
+        const n = legs.length;
+        const combo = [];
+
+        const recurse = (start) => {
+          if (combo.length >= 2) {
+            let P = 1;
+            let O = 1;
+            for (const leg of combo) {
+              P *= oppTrueProb(leg);
+              O *= oppEffectiveOdds(leg);
+            }
+            if (O >= minOdds && O <= maxOdds) {
+              results.push({ book, legs: combo.slice(), trueProb: P, odds: O, evPct: (P * O - 1) * 100 });
+            }
+          }
+          if (combo.length === maxLegs) return;
+          for (let i = start; i < n; i++) {
+            const leg = legs[i];
+            if (combo.some((c) => c.event === leg.event)) continue;
+            combo.push(leg);
+            recurse(i + 1);
+            combo.pop();
+          }
+        };
+        recurse(0);
+      });
+
+      results.sort((a, b) => (b.evPct - a.evPct) || (b.trueProb - a.trueProb));
+      return {
+        top: results.slice(0, TOP_K),
+        total: results.length,
+        poolSize: pool.length,
+        combinableBooks,
+        truncated,
+      };
+    }
+
+    function renderBuilder() {
+      const resultsEl = document.getElementById('builder-results');
+      const emptyEl = document.getElementById('builder-empty');
+      const metaEl = document.getElementById('builder-meta');
+      if (!resultsEl) return;
+
+      if (!lastScanData) {
+        resultsEl.innerHTML = '';
+        metaEl.textContent = '';
+        emptyEl.textContent = "Lance d'abord un scan +EV, puis reviens ici.";
+        emptyEl.classList.remove('hidden');
+        return;
+      }
+
+      const bankroll = parseFloat(bankrollInput.value) || appConfig.defaultBankroll || 1000;
+      const kellyFraction = parseFloat(kellySelect.value) || appConfig.defaultKellyFraction || 0.25;
+      const { top, total, poolSize, combinableBooks, truncated } = buildParlays();
+
+      metaEl.innerHTML = `Vivier : <strong>${poolSize}</strong> jambes +EV jouables • ${combinableBooks} book(s) combinable(s) • ${total} combinés dans la fourchette${truncated ? ' • <span class="muted">pool tronqué (perf)</span>' : ''}`;
+
+      if (!top.length) {
+        resultsEl.innerHTML = '';
+        if (poolSize < 2) {
+          emptyEl.textContent = 'Pas assez de jambes +EV jouables (hors exchanges) au dernier scan.';
+        } else if (combinableBooks === 0) {
+          emptyEl.textContent = "Aucun book n'a 2+ jambes +EV : impossible de former un combiné jouable (1 ticket = 1 book).";
+        } else {
+          emptyEl.textContent = 'Aucun combiné dans la fourchette de cote. Élargis [min, max] ou augmente les jambes max.';
+        }
+        emptyEl.classList.remove('hidden');
+        return;
+      }
+      emptyEl.classList.add('hidden');
+      resultsEl.innerHTML = top.map((c) => renderParlayCard(c, bankroll, kellyFraction)).join('');
+    }
+
+    function renderParlayCard(c, bankroll, kellyFraction) {
+      const kelly = calculateKellyStake(c.trueProb, c.odds, bankroll, kellyFraction);
+      const hitPct = c.trueProb * 100;
+      const fairOdds = c.trueProb > 0 ? 1 / c.trueProb : 0;
+      const sumEdge = c.legs.reduce((s, l) => s + (l.edge_percent || 0), 0);
+      const meanEdge = sumEdge / c.legs.length;
+      const anyHit = (1 - c.legs.reduce((s, l) => s * (1 - oppTrueProb(l)), 1)) * 100;
+      const evClass = c.evPct >= 0 ? 'gain' : 'loss';
+      const legsHtml = c.legs
+        .map((l) => {
+          const pt = l.bet.point !== undefined && l.bet.point !== null ? ` (${formatLine(l.bet.point)})` : '';
+          return `<li>
+            <span class="parlay-leg-main"><strong>${l.bet.outcome || ''}${pt}</strong><span class="muted">${l.event || ''}</span></span>
+            <span class="parlay-leg-odds mono">${formatOddsDisplay(oppEffectiveOdds(l))}<span class="muted">${formatPercent(l.edge_percent)}</span></span>
+          </li>`;
+        })
+        .join('');
+      return `
+        <div class="card parlay-card">
+          <div class="parlay-head">
+            <span class="parlay-book">${c.legs.length} jambes @ <strong>${c.book}</strong></span>
+            <span class="parlay-odds mono">${formatOddsDisplay(c.odds)}</span>
+          </div>
+          <ul class="parlay-legs">${legsHtml}</ul>
+          <div class="parlay-metrics">
+            <div><span class="metric-label">Edge compound</span><span class="metric-value ${evClass}">${formatPercent(c.evPct)}</span></div>
+            <div><span class="metric-label">Proba de hit</span><span class="metric-value">${formatPercent(hitPct)}</span></div>
+            <div><span class="metric-label">Cote fair / offerte</span><span class="metric-value mono">${fairOdds.toFixed(2)} / ${c.odds.toFixed(2)}</span></div>
+            <div><span class="metric-label">Mise Kelly</span><span class="metric-value">${formatCurrency(kelly.recommended)} <span class="mono">${kelly.fractionPercent.toFixed(2)}%</span></span></div>
+          </div>
+          <div class="parlay-compare">
+            <strong>vs singles :</strong> ces ${c.legs.length} jambes jouées séparément (${c.legs.length}u) → ROI moyen <strong>${formatPercent(meanEdge)}</strong>/u, au moins une gagnante ~${formatPercent(anyHit)}. Le combiné (1u) paie <strong>${formatPercent(c.evPct)}</strong> mais ne touche que ${formatPercent(hitPct)} du temps.
+          </div>
+        </div>`;
+    }
+
     function updateOddsToggle() {
       if (!oddsToggle) return;
       oddsToggle.querySelectorAll('span').forEach((span) => {
@@ -1147,8 +1331,10 @@
       middlesPanel.classList.toggle('hidden', tab !== 'middles');
       plusEvPanel.classList.toggle('hidden', tab !== 'plus-ev');
       historyPanel.classList.toggle('hidden', tab !== 'history');
+      builderPanel.classList.toggle('hidden', tab !== 'builder');
       middlesConfig.classList.toggle('hidden', tab !== 'middles');
       plusEvConfig.classList.toggle('hidden', tab !== 'plus-ev');
+      builderConfig.classList.toggle('hidden', tab !== 'builder');
       if (tab === 'arbitrage') {
         renderArbitrage();
       } else if (tab === 'middles') {
@@ -1157,6 +1343,8 @@
         renderPlusEv();
       } else if (tab === 'history') {
         loadHistory();
+      } else if (tab === 'builder') {
+        renderBuilder();
       }
     }
 
