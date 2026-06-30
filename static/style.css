@@ -648,3 +648,37 @@ main {
   color: var(--error);
   font-weight: 600;
 }
+
+.result-cell {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.result-btn {
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, #cbd5e1);
+  background: transparent;
+  color: var(--muted, #64748b);
+  font-weight: 700;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.result-btn:hover {
+  border-color: currentColor;
+}
+
+.result-btn.win.active {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+}
+
+.result-btn.loss.active {
+  background: var(--error);
+  border-color: var(--error);
+  color: #fff;
+}

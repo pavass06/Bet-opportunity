@@ -393,8 +393,28 @@
         </div>
       </section>
 
+      <section class="stats-row">
+        <div class="stat-card">
+          <span class="stat-label">Résolus</span>
+          <span class="stat-value" id="hist-resolved">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Win rate (réel / attendu)</span>
+          <span class="stat-value" id="hist-winrate">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">ROI réalisé (mise plate)</span>
+          <span class="stat-value" id="hist-roi">—</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Brier score</span>
+          <span class="stat-value" id="hist-brier">—</span>
+        </div>
+      </section>
+
       <section class="card summary-info" id="hist-clv-explain">
         <p><strong>CLV (Closing Line Value)</strong> mesure si tu as obtenu une meilleure cote que la cote de fermeture Pinnacle. CLV &gt; 0% signifie que tu as devancé le marché — indicateur que le modèle détecte de la vraie valeur. Objectif : CLV moyen &gt; 0% sur 100+ paris trackés.</p>
+        <p><strong>Résultat manuel (Win/Loss)</strong> : renseigne l'issue de chaque pari pour débloquer trois métriques. <strong>ROI réalisé</strong> = profit en mise plate (1 unité/pari : +cote−1 si gagné, −1 si perdu) — le vrai juge de la stratégie. <strong>Win rate réel vs attendu</strong> compare ton taux de réussite à la moyenne de tes probabilités fair. <strong>Brier score</strong> = moyenne de (proba fair − résultat)² : &lt; 0.25 signifie que tes probas sont informatives, 0 = calibration parfaite.</p>
       </section>
 
       <section class="card results-card">
@@ -421,6 +441,7 @@
               <th>Cote closing</th>
               <th>CLV</th>
               <th>Début</th>
+              <th>Résultat</th>
             </tr>
           </thead>
           <tbody id="hist-body"></tbody>
@@ -556,6 +577,17 @@
           setActiveTab(target);
         }
       });
+    });
+
+    document.getElementById('hist-body').addEventListener('click', (event) => {
+      const btn = event.target.closest('.result-btn');
+      if (!btn) return;
+      const cell = btn.closest('.result-cell');
+      const id = cell?.dataset.id;
+      if (!id) return;
+      const value = Number(btn.dataset.result);
+      const current = btn.classList.contains('active') ? value : null;
+      setResult(id, current, value);
     });
 
     form.addEventListener('submit', async (event) => {
@@ -1158,6 +1190,30 @@
         summary.avg_clv != null ? formatPercent(summary.avg_clv) : '—';
       document.getElementById('hist-pct-positive').textContent =
         summary.pct_positive_clv != null ? `${summary.pct_positive_clv}%` : '—';
+      document.getElementById('hist-resolved').textContent =
+        summary.resolved != null ? `${summary.resolved}${summary.total ? ` / ${summary.total}` : ''}` : '—';
+      document.getElementById('hist-winrate').textContent =
+        summary.win_rate != null
+          ? `${summary.win_rate}% / ${summary.expected_win_rate != null ? summary.expected_win_rate + '%' : '—'}`
+          : '—';
+      const roiEl = document.getElementById('hist-roi');
+      if (summary.roi_percent != null) {
+        const profit = Number(summary.profit_units);
+        const profitTxt = `${profit >= 0 ? '+' : ''}${profit.toFixed(2)}u`;
+        roiEl.textContent = `${formatPercent(summary.roi_percent)} (${profitTxt})`;
+        roiEl.className = `stat-value ${summary.roi_percent >= 0 ? 'gain' : 'loss'}`;
+      } else {
+        roiEl.textContent = '—';
+        roiEl.className = 'stat-value';
+      }
+      const brierEl = document.getElementById('hist-brier');
+      if (summary.brier != null) {
+        brierEl.textContent = summary.brier.toFixed(4);
+        brierEl.className = `stat-value ${summary.brier < 0.25 ? 'gain' : 'loss'}`;
+      } else {
+        brierEl.textContent = '—';
+        brierEl.className = 'stat-value';
+      }
       document.getElementById('hist-table-count').textContent = `${rows.length} entrées`;
 
       loadingEl.classList.add('hidden');
@@ -1185,10 +1241,35 @@
           <td class="mono">${row.closing_odds != null ? Number(row.closing_odds).toFixed(2) : '<span class="muted">en attente</span>'}</td>
           <td>${clv != null ? `<span class="${clv > 0 ? 'gain' : 'loss'}">${formatPercent(clv)}</span>` : '<span class="muted">—</span>'}</td>
           <td class="mono">${commenceTime}</td>
+          <td>${formatResultCell(row)}</td>
         `;
         body.appendChild(tr);
       });
       tableEl.classList.remove('hidden');
+    }
+
+    function formatResultCell(row) {
+      const r = row.result;
+      const winActive = r === 1 ? ' active' : '';
+      const lossActive = r === 0 ? ' active' : '';
+      return `<span class="result-cell" data-id="${row.id}">
+        <button type="button" class="result-btn win${winActive}" data-result="1" title="Gagné">W</button>
+        <button type="button" class="result-btn loss${lossActive}" data-result="0" title="Perdu">L</button>
+      </span>`;
+    }
+
+    async function setResult(id, current, value) {
+      const next = current === value ? 'clear' : value;
+      try {
+        const res = await fetch('/result', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, result: next }),
+        });
+        if (res.ok) loadHistory();
+      } catch (err) {
+        /* silent: keep UI responsive */
+      }
     }
 
     function formatGapCell(opp) {

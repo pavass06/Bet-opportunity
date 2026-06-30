@@ -114,6 +114,17 @@ edge-scanner/
 - Endpoint `/clv-summary` : stats agrégées JSON.
 - **Contrainte** : le scheduler nécessite `ODDS_API_KEY` dans `.env` — si la clé est entrée uniquement dans l'UI, le closing odds job ne se déclenchera pas.
 
+### Résultats manuels + Brier + ROI réalisé (✅ Implémenté)
+- Colonnes `result` (1=win, 0=loss, NULL=en attente) et `result_set_at` ajoutées à `plus_ev_opportunity` (migration auto via `ALTER TABLE` dans `init_db`).
+- Saisie manuelle dans l'onglet **History** : boutons **W/L** par ligne ; re-cliquer remet le pari en attente.
+- Endpoint `POST /result` (`{id, result}`) → `db.set_result()` ; `result` ∈ {0, 1, null}.
+- **ROI réalisé** en mise plate (1 unité/pari) : `profit = soft_odds−1` si win, `−1` si loss ; `ROI% = profit_total / nb_résolus × 100`.
+- **Win rate réel vs attendu** : taux de réussite observé comparé à `AVG(1/fair_odds)` sur les paris résolus.
+- **Brier score** : `AVG((1/fair_odds − result)²)` ; vert si < 0.25, sinon rouge.
+- 4 nouvelles stat cards dans History : Résolus, Win rate (réel/attendu), ROI réalisé, Brier.
+- `GET /history` renvoie désormais `summary = {…CLV…, …performance…}` via `get_performance_summary()`.
+- **Hypothèse assumée** : pas d'état push/void — un nul (soccer h2h) sur la sélection prise compte comme Loss.
+
 ### Configuration disponible dans l'UI
 - Clé API (ou lecture depuis `.env`)
 - Sports sélectionnables individuellement (ou "scan all active sports")
@@ -142,6 +153,8 @@ edge-scanner/
 - [ ] Ajouter colonne `result` (0/1) saisie manuellement dans l'UI pour chaque bet
 - [ ] Calculer le Brier score : `AVG((predicted_prob - result)²)` sur les bets avec résultat
 - [ ] Afficher le Brier score dans le dashboard History
+
+_Note : remplacé par la section ci-dessus « Résultats manuels + Brier + ROI réalisé » (✅ TERMINÉ)._
 
 ### PRIORITÉ 3 — Alertes Telegram
 - [ ] Bot Telegram via `python-telegram-bot` ou appel direct `requests`
@@ -259,4 +272,4 @@ python app.py --port 8080
 
 ---
 
-*Dernière mise à jour : 2026-06-24 — Persistance SQLite + CLV tracking implémentés (Phase 1 & 2).*
+*Dernière mise à jour : 2026-06-30 — Résultats manuels (Win/Loss) + Brier score + ROI réalisé + Win rate vs attendu (Phase 2).*

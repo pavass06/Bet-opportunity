@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS plus_ev_opportunity (
     commence_time       TEXT,
     closing_odds        REAL,
     clv_percent         REAL,
-    closing_fetched_at  TEXT
+    closing_fetched_at  TEXT,
+    result              INTEGER,
+    result_set_at       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_commence ON plus_ev_opportunity(commence_time);
@@ -45,6 +47,12 @@ def _conn() -> sqlite3.Connection:
 def init_db() -> None:
     with _conn() as conn:
         conn.executescript(_SCHEMA)
+        # Migrate older databases created before the result columns existed.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(plus_ev_opportunity)")}
+        if "result" not in existing:
+            conn.execute("ALTER TABLE plus_ev_opportunity ADD COLUMN result INTEGER")
+        if "result_set_at" not in existing:
+            conn.execute("ALTER TABLE plus_ev_opportunity ADD COLUMN result_set_at TEXT")
 
 
 def save_plus_ev_opportunities(opportunities: list[dict]) -> int:
@@ -124,6 +132,50 @@ def update_closing_odds(opp_id: str, closing_odds: float) -> Optional[float]:
             (closing_odds, clv, dt.datetime.utcnow().isoformat() + "Z", opp_id),
         )
     return clv
+
+
+def set_result(opp_id: str, result: Optional[int]) -> bool:
+    """Set the manual result of a bet. result: 1=win, 0=loss, None=clear."""
+    if result not in (0, 1, None):
+        return False
+    set_at = dt.datetime.utcnow().isoformat() + "Z" if result is not None else None
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE plus_ev_opportunity SET result = ?, result_set_at = ? WHERE id = ?",
+            (result, set_at, opp_id),
+        )
+    return cur.rowcount > 0
+
+
+def get_performance_summary() -> dict:
+    """Realized performance over bets with a manual result (flat 1-unit stake)."""
+    with _conn() as conn:
+        row = conn.execute(
+            """SELECT
+               SUM(CASE WHEN result IS NOT NULL THEN 1 ELSE 0 END)              AS resolved,
+               SUM(CASE WHEN result = 1 THEN 1 ELSE 0 END)                      AS wins,
+               AVG(CASE WHEN result IS NOT NULL THEN 1.0 / fair_odds END)       AS avg_pred_prob,
+               AVG(CASE WHEN result IS NOT NULL
+                        THEN (1.0 / fair_odds - result) * (1.0 / fair_odds - result) END)
+                                                                               AS brier,
+               SUM(CASE WHEN result = 1 THEN soft_odds - 1
+                        WHEN result = 0 THEN -1 ELSE 0 END)                     AS profit_units
+               FROM plus_ev_opportunity
+               WHERE fair_odds IS NOT NULL AND fair_odds > 0"""
+        ).fetchone()
+    resolved = (row["resolved"] or 0) if row else 0
+    wins = (row["wins"] or 0) if row else 0
+    profit_units = (row["profit_units"] or 0.0) if row else 0.0
+    return {
+        "resolved": resolved,
+        "wins": wins,
+        "win_rate": round(wins / resolved * 100, 1) if resolved else None,
+        "expected_win_rate": round(row["avg_pred_prob"] * 100, 1)
+        if resolved and row["avg_pred_prob"] is not None else None,
+        "brier": round(row["brier"], 4) if resolved and row["brier"] is not None else None,
+        "profit_units": round(profit_units, 2),
+        "roi_percent": round(profit_units / resolved * 100, 2) if resolved else None,
+    }
 
 
 def get_history(limit: int = 500) -> list[dict]:

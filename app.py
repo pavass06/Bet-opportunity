@@ -23,7 +23,15 @@ from config import (
     REGION_OPTIONS,
     SHARP_BOOKS,
 )
-from db import export_csv, get_clv_summary, get_history, init_db, save_plus_ev_opportunities
+from db import (
+    export_csv,
+    get_clv_summary,
+    get_history,
+    get_performance_summary,
+    init_db,
+    save_plus_ev_opportunities,
+    set_result,
+)
 from scanner import run_scan
 from scheduler import start_scheduler, stop_scheduler
 
@@ -123,8 +131,29 @@ def history() -> tuple:
     except (TypeError, ValueError):
         limit = 500
     rows = get_history(limit=limit)
-    summary = get_clv_summary()
+    summary = {**get_clv_summary(), **get_performance_summary()}
     return jsonify({"rows": rows, "summary": summary}), 200
+
+
+@app.route("/result", methods=["POST"])
+def result() -> tuple:
+    payload = request.get_json(force=True, silent=True) or {}
+    opp_id = (payload.get("id") or "").strip()
+    raw = payload.get("result")
+    value = None if raw in (None, "", "clear") else raw
+    if value is not None:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "invalid result"}), 400
+        if value not in (0, 1):
+            return jsonify({"success": False, "error": "result must be 0 or 1"}), 400
+    if not opp_id:
+        return jsonify({"success": False, "error": "missing id"}), 400
+    ok = set_result(opp_id, value)
+    if not ok:
+        return jsonify({"success": False, "error": "unknown id"}), 404
+    return jsonify({"success": True, "summary": get_performance_summary()}), 200
 
 
 @app.route("/export")
