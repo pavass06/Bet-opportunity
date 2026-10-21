@@ -2,21 +2,21 @@
 
 **Arbitrage • Middles • +EV • Kelly • CLV**
 
-Scanner de paris sportifs qui compare les cotes de plusieurs bookmakers (via [The Odds API](https://the-odds-api.com/)) pour détecter des arbitrages, des middles et des paris à espérance positive (+EV), puis suit la qualité de ces signaux dans le temps (CLV, Brier, ROI réalisé).
+Sports betting scanner that compares odds across bookmakers (via [The Odds API](https://the-odds-api.com/)) to detect arbitrage, middles and positive expected value (+EV) bets, then tracks signal quality over time (CLV, Brier score, realized ROI).
 
-> Fork d'un scanner d'arbitrage open source, étendu : +EV avec démarge du book sharp, Kelly, combinés, persistance SQLite, suivi du CLV et des résultats.
+> Fork of an open source sports arbitrage scanner, extended with: +EV with sharp-book de-vigging, Kelly sizing, a parlay builder, SQLite persistence, and CLV / results tracking.
 
-## Fonctionnalités
+## Features
 
-| Onglet | Ce qu'il trouve | Profil de risque |
+| Tab | What it finds | Risk profile |
 |---|---|---|
-| **Arbitrage** | Profit garanti en pariant sur toutes les issues chez différents books | Quasi nul (risque d'exécution) |
-| **Middles** | Lignes non alignées entre deux books : les deux paris peuvent gagner | Variance élevée, +EV si la probabilité est juste |
-| **+EV** | Cotes d'un book « soft » supérieures à la cote fair du book « sharp » | Variance moyenne, profit sur le volume |
-| **Builder** | Combinés construits à partir des +EV du dernier scan | Variance élevée |
-| **History** | Paris suivis en base : CLV, résultats W/L, ROI réalisé, Brier | Outil de validation |
+| **Arbitrage** | Guaranteed profit by betting every outcome across different books | Near zero (execution risk) |
+| **Middles** | Line gaps between two books where both bets can win | High variance, +EV if the probability is right |
+| **+EV** | Soft book odds better than the sharp book's fair price | Medium variance, profit over volume |
+| **Builder** | Parlays built from the last scan's +EV bets | High variance |
+| **History** | Tracked bets: CLV, W/L results, realized ROI, Brier score | Validation tool |
 
-## Installation
+## Setup
 
 ```bash
 git clone https://github.com/pavass06/Bet-opportunity.git
@@ -26,141 +26,141 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Le navigateur s'ouvre automatiquement (port 5000, sinon 5050 ou 8000 ; sur Mac le 5000 est souvent pris par AirPlay, l'app bascule alors sur 5050).
+Your browser opens automatically (port 5000, falling back to 5050 or 8000; on macOS port 5000 is often taken by AirPlay, so the app switches to 5050).
 
-**Clé API** : gratuite sur [the-odds-api.com](https://the-odds-api.com/) (500 requêtes/mois). Saisis-la dans l'interface, ou crée un fichier `.env` à la racine :
+**API key:** free at [the-odds-api.com](https://the-odds-api.com/) (500 requests/month). Enter it in the UI, or create a `.env` file at the project root:
 
 ```
-ODDS_API_KEY=ta_clé_ici
+ODDS_API_KEY=your_api_key_here
 ```
 
-Le `.env` est nécessaire pour le calcul automatique du CLV (le scheduler tourne en tâche de fond et lit la clé au démarrage).
+The `.env` file is required for automatic CLV tracking (the background scheduler reads the key at startup).
 
 ---
 
-## La théorie en bref
+## The theory in short
 
-### Probabilité implicite et marge (vig)
+### Implied probability and the vig
 
-Une cote décimale `c` correspond à une probabilité implicite `1/c`. Sur un match à deux issues, un book affiche par exemple 1.91 / 1.91 : 52,4 % + 52,4 % = **104,8 %**. Les 4,8 % en trop sont sa marge, ce qui le fait gagner à long terme.
+A decimal price `c` implies a probability of `1/c`. On a two-way market a book might show 1.91 / 1.91: 52.4% + 52.4% = **104.8%**. The extra 4.8% is the bookmaker's margin (the *vig*), which is how it wins in the long run.
 
-### EV : l'espérance de gain
+### EV: expected value
 
-L'espérance est la somme de chaque résultat pondéré par sa probabilité. Pour 1 € misé :
+Expected value is the sum of each possible outcome weighted by its probability. For a 1 unit stake:
 
-| Événement | Probabilité | Gain net |
+| Event | Probability | Net result |
 |---|---|---|
-| Le pari gagne | `p` | `+(cote − 1)` |
-| Le pari perd | `1 − p` | `−1` |
+| Bet wins | `p` | `+(odds − 1)` |
+| Bet loses | `1 − p` | `−1` |
 
 ```
-EV = p × (cote − 1) − (1 − p)  =  p × cote − 1
+EV = p × (odds − 1) − (1 − p)  =  p × odds − 1
 ```
 
-Le pari est +EV quand **`p × cote > 1`**, c'est-à-dire quand la cote est supérieure à la cote fair `1/p`. Exemple : cote 2.20 et vraie probabilité 50 % → EV = +0,10 € par euro misé. Pour une mise `B`, tout est multiplié par `B`.
+A bet is +EV when **`p × odds > 1`**, i.e. when the price is above the fair price `1/p`. Example: odds 2.20 and a true probability of 50% give EV = +0.10 per unit staked. For a stake `B`, everything scales by `B`.
 
-Un pari +EV peut perdre : l'EV est une moyenne sur un grand nombre de paris. Tout le problème est de connaître `p`.
+A +EV bet can still lose: EV is an average over many bets. The whole difficulty is knowing `p`.
 
-### Comment `p` est estimé : le book sharp
+### How `p` is estimated: the sharp book
 
-Personne ne connaît la vraie probabilité. On prend un book très précis comme référence (Pinnacle par défaut, ou Betfair Exchange / Matchbook) :
+Nobody knows the true probability. Instead, a very accurate book is used as the reference (Pinnacle by default, or Betfair Exchange / Matchbook):
 
-1. On retire sa marge (méthode proportionnelle : on divise chaque probabilité implicite par leur somme).
-2. On obtient la **cote fair**.
-3. On compare avec les books soft (DraftKings, FanDuel, Winamax, Unibet…).
-
-```
-edge % = (cote_soft / cote_fair − 1) × 100
-```
-
-C'est du *value betting*. L'hypothèse est que le sharp a raison et que le soft se trompe.
-
-### Critère de Kelly
-
-L'EV dit **s'il faut parier**, Kelly dit **combien miser**. Il maximise la croissance composée de la bankroll :
+1. Remove its vig (proportional method: divide each implied probability by their sum).
+2. This gives the **fair odds**.
+3. Compare against soft books (DraftKings, FanDuel, Winamax, Unibet, etc.).
 
 ```
-f* = (p × b − q) / b      avec b = cote − 1 et q = 1 − p
+edge % = (soft_odds / fair_odds − 1) × 100
 ```
 
-C'est l'EV par euro (`p×b − q`) divisée par `b` : à edge égal, une cote élevée est plus risquée, donc on mise moins.
+This is *value betting*. The assumption is that the sharp book is right and the soft book is wrong.
 
-Pourquoi pas simplement maximiser l'EV ? Parce qu'elle conseillerait de miser toute la bankroll, ce qui mène à la ruine : la bankroll évolue par **multiplication**, pas par addition. Kelly maximise le taux de croissance géométrique :
+### Kelly criterion
+
+EV tells you **whether** to bet, Kelly tells you **how much**. It maximizes the compound growth of the bankroll:
 
 ```
-g(f) = (1 + f·b)^p × (1 − f)^q          (équivalent à maximiser p·ln(1+f·b) + q·ln(1−f))
+f* = (p × b − q) / b      with b = odds − 1 and q = 1 − p
 ```
 
-Cette fonction est en cloche : sous-miser coûte peu de croissance, sur-miser (au-delà de `2f*`) fait perdre de l'argent malgré un edge positif. Comme `p` n'est qu'estimé, on utilise un **Kelly fractionné** : ½, **¼ (défaut)** ou 1/10.
+This is the EV per unit (`p×b − q`) divided by `b`: for the same edge, longer odds are riskier, so the stake is smaller.
+
+Why not just maximize EV? Because it would tell you to stake your whole bankroll, which leads to ruin: a bankroll grows by **multiplication**, not addition. Kelly maximizes the geometric growth rate:
+
+```
+g(f) = (1 + f·b)^p × (1 − f)^q          (equivalent to maximizing p·ln(1+f·b) + q·ln(1−f))
+```
+
+This curve is bell-shaped: under-betting costs little growth, over-betting (beyond `2f*`) loses money despite a positive edge. Since `p` is only an estimate, **fractional Kelly** is used: ½, **¼ (default)** or 1/10.
 
 ### Arbitrage
 
-Aucune hypothèse sur `p`. Si la somme des probabilités implicites des meilleures cotes de chaque issue est **inférieure à 100 %**, on mise sur toutes les issues avec des mises proportionnelles et on gagne quel que soit le résultat.
+No assumption on `p`. If the sum of the implied probabilities of the best price on each outcome is **below 100%**, you stake every outcome in proportion and win whatever happens.
 
-Exemple : 2.10 sur l'équipe 1 chez A, 2.10 sur l'équipe 2 chez B → `1/2,1 + 1/2,1 = 95,2 %` → profit garanti d'environ 5 %.
+Example: 2.10 on team 1 at book A, 2.10 on team 2 at book B → `1/2.1 + 1/2.1 = 95.2%` → about 5% guaranteed profit.
 
-Risques pratiques : les cotes bougent avant le second pari, les règles diffèrent d'un book à l'autre, les comptes gagnants sont limités. Les exchanges prennent une commission, déduite par l'app (ROI net et brut affichés).
+Practical risks: odds move before the second leg is placed, rules differ between books, and winning accounts get limited. Exchanges charge a commission, which the app deducts (net and gross ROI are both shown).
 
 ### Middle
 
-Deux books proposent des lignes différentes sur le même marché, par exemple Équipe X **−2,5** chez A et Équipe Y **+4,5** chez B. Si X gagne de 3 ou 4 points, les deux paris gagnent. Hors de cette zone, un seul gagne et on perd la marge (~5 %) sur l'autre.
+Two books offer different lines on the same market, e.g. Team X **−2.5** at A and Team Y **+4.5** at B. If X wins by 3 or 4 points, both bets win. Outside that window only one wins and you lose the vig (~5%) on the other.
 
 ```
-EV = P(middle) × gain_double − (1 − P(middle)) × perte_simple
+EV = P(middle) × double_win − (1 − P(middle)) × single_loss
 ```
 
-`P(middle)` vient de distributions historiques des écarts par sport (`PROBABILITY_PER_INTEGER` dans `config.py`). Au NFL, les **key numbers** (3, 7, 10, 6, 14…) sont des marges très fréquentes : un middle qui les englobe vaut bien plus qu'un autre de même largeur. Profil : petite perte fréquente, gros gain rare, rentable seulement si la probabilité estimée est juste.
+`P(middle)` comes from historical margin distributions per sport (`PROBABILITY_PER_INTEGER` in `config.py`). In the NFL, **key numbers** (3, 7, 10, 6, 14…) are very frequent margins: a middle spanning them is worth much more than one of the same width. Profile: small frequent loss, rare big win, profitable only if the estimated probability is right.
 
 ### CLV (Closing Line Value)
 
-On compare la cote prise à la cote de **clôture** de Pinnacle, juste avant le match :
+Compare the price you took with Pinnacle's **closing** price just before the event starts:
 
 ```
-CLV % = (cote_prise / cote_clôture − 1) × 100
+CLV % = (taken_odds / closing_odds − 1) × 100
 ```
 
-La ligne de clôture est le meilleur estimateur public de la vraie probabilité. Un CLV moyen positif sur quelques dizaines de paris indique un vrai edge, alors que le ROI réalisé demande des milliers de paris pour être fiable.
+The closing line is the best public estimate of the true probability. A positive average CLV over a few dozen bets points to a real edge, whereas realized ROI needs thousands of bets to be reliable.
 
-### Combinés (Builder)
+### Parlays (Builder)
 
-Les cotes et les probabilités se multiplient, **les marges aussi**. Un combiné n'est intéressant que si chaque jambe est +EV. Le Builder impose un seul book par ticket, exclut deux jambes du même match (corrélation) et trie par edge composé.
+Odds and probabilities multiply, **and so do the margins**. A parlay is only worthwhile if every leg is +EV. The Builder uses a single book per ticket, excludes two legs from the same match (correlation), and sorts by compound edge.
 
 ---
 
-## Suivi et validation
+## Tracking and validation
 
-- Chaque +EV détecté est sauvegardé en SQLite (`data/edge_scanner.db`), dédupliqué par `(event, marché, issue, book)` et par jour.
-- Un job APScheduler (toutes les 30 min) récupère la cote de clôture Pinnacle des événements qui démarrent dans l'heure et calcule le CLV.
-- L'onglet **History** permet de saisir W/L à la main et affiche : win rate réel vs attendu, ROI réalisé en mise plate, **score de Brier** (`AVG((1/cote_fair − résultat)²)`, bon si < 0,25).
-- `/export` télécharge tout l'historique en CSV.
+- Every detected +EV bet is saved to SQLite (`data/edge_scanner.db`), deduplicated per `(event, market, outcome, book)` and per day.
+- An APScheduler job (every 30 min) fetches Pinnacle's closing odds for events starting within the hour and computes CLV.
+- The **History** tab lets you record W/L by hand and shows: actual vs expected win rate, flat-stake realized ROI, and the **Brier score** (`AVG((1/fair_odds − result)²)`, good if < 0.25).
+- `/export` downloads the full history as CSV.
 
-Hypothèse assumée : pas d'état push/void, un nul (soccer h2h) sur la sélection prise compte comme perdu.
+Assumption: there is no push/void state; a draw (soccer h2h) on the selected outcome counts as a loss.
 
-## Utilisation de l'API
+## API usage
 
-Un scan complet de 11 sports consomme 12 requêtes (1 pour la liste des sports + 1 par sport). Le tier gratuit (500/mois) permet environ 40 scans complets. La région EU est toujours incluse pour garantir la présence de Pinnacle.
+A full scan of 11 sports uses 12 requests (1 for the sports list + 1 per sport). The free tier (500/month) allows about 40 full scans. The EU region is always included so that Pinnacle is available as the sharp reference.
 
-## Configuration (interface)
+## Configuration (UI)
 
-Régions (US, US2, UK, EU, AU), sports, stake, commission exchange, gap minimum des middles, edge minimum +EV, book sharp de référence, fraction de Kelly, bankroll, cotes décimales/américaines, thème sombre/clair.
+Regions (US, US2, UK, EU, AU), sports, stake, exchange commission, minimum middle gap, minimum +EV edge, sharp reference book, Kelly fraction, bankroll, decimal/American odds, dark/light theme.
 
-## Stack
+## Tech stack
 
-Python 3.11+, Flask, HTML/CSS/JS vanilla, SQLite, APScheduler, The Odds API.
+Python 3.11+, Flask, vanilla HTML/CSS/JS, SQLite, APScheduler, The Odds API.
 
 ## Roadmap
 
-- Alertes Telegram
-- Auto-refresh de l'interface
-- Near-arbs (somme < 103 %)
-- Démarge par méthode Shin
-- Filtres de fraîcheur des cotes et score de confiance
-- Polymarket / Kalshi comme références
+- Telegram alerts
+- UI auto-refresh
+- Near-arbs (sum < 103%)
+- Shin de-vigging method
+- Odds freshness filters and a confidence score
+- Polymarket / Kalshi as reference sources
 
-## Avertissement
+## Disclaimer
 
-Projet à but éducatif et de recherche. Les paris sportifs comportent un risque de perte, les estimations de probabilité peuvent être fausses et les bookmakers peuvent limiter les comptes gagnants. Ne mise jamais plus que ce que tu peux te permettre de perdre.
+For educational and research purposes. Sports betting involves risk of loss, probability estimates can be wrong, and bookmakers may limit winning accounts. Never stake more than you can afford to lose.
 
-## Licence
+## License
 
-MIT. Basé sur un projet open source d'origine, voir `LICENSE`.
+MIT. Based on an original open source project, see `LICENSE`.
