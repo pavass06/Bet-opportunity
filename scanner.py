@@ -1,4 +1,9 @@
-"""Core arbitrage scanning logic."""
+"""Opportunity detection on bookmaker odds: arbitrage, middles and +EV bets.
+
+Data flow: ``run_scan`` fetches odds from The Odds API, then ``analyze_events`` (pure, no network)
+turns a list of events in The Odds API v4 format into ranked opportunities. The pricing maths
+(margin removal, edge, EV, Kelly) lives in ``odds_math``.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +39,13 @@ from config import (
     SOFT_BOOK_KEYS,
     SPORT_DISPLAY_NAMES,
     markets_for_sport,
+)
+from odds_math import (
+    edge_percent,
+    expected_value,
+    kelly_stake,
+    odds_after_commission,
+    remove_margin,
 )
 
 BASE_URL = "https://api.the-odds-api.com/v4"
@@ -76,15 +88,6 @@ def _ensure_sharp_region(regions: List[str], sharp_key: str) -> List[str]:
     if required_region and required_region not in seen and required_region in REGION_CONFIG:
         normalized.append(required_region)
     return normalized
-
-
-def _apply_commission(price: float, commission_rate: float, is_exchange: bool) -> float:
-    if not is_exchange:
-        return price
-    edge = price - 1.0
-    if edge <= 0:
-        return price
-    return 1.0 + edge * (1.0 - commission_rate)
 
 
 def _sharp_priority(selected_key: str) -> List[dict]:
@@ -155,10 +158,12 @@ def _total_gap_info(over_line: float, under_line: float) -> Optional[dict]:
     }
 
 
-def _build_sharp_reference(
-    bookmaker: dict, commission_rate: float, is_exchange: bool
-) -> Dict[Tuple[str, str], dict]:
-    """Return mapping of (market_key, line_key) to vig-free odds."""
+def _group_outcomes_by_line(bookmaker: dict, min_outcomes: int = 2) -> Dict[Tuple[str, str], List[dict]]:
+    """Group one bookmaker's priced outcomes by ``(market_key, line_key)``.
+
+    Keeps h2h/spreads/totals only and lines with at least ``min_outcomes`` outcomes,
+    so 3-way soccer h2h markets (home/draw/away) are included.
+    """
     line_map: Dict[Tuple[str, str], List[dict]] = {}
     for market in bookmaker.get("markets", []):
         market_key = market.get("key")
@@ -175,29 +180,32 @@ def _build_sharp_reference(
                 price_val = float(price)
             except (TypeError, ValueError):
                 continue
-            adjusted_price = _apply_commission(price_val, commission_rate, is_exchange)
             line_map.setdefault((market_key, line_key), []).append(
                 {
                     "name": (outcome.get("name") or "").strip().lower(),
                     "display_name": outcome.get("name") or "",
-                    "price": adjusted_price,
-                    "raw_price": price_val,
+                    "price": price_val,
                     "point": outcome.get("point"),
                 }
             )
+    return {key: entries for key, entries in line_map.items() if len(entries) >= min_outcomes}
+
+
+def _build_sharp_reference(
+    bookmaker: dict, commission_rate: float, is_exchange: bool
+) -> Dict[Tuple[str, str], dict]:
+    """Return a mapping ``(market_key, line_key) -> margin-free fair odds`` from the sharp book."""
     references: Dict[Tuple[str, str], dict] = {}
-    for key, entries in line_map.items():
+    for key, entries in _group_outcomes_by_line(bookmaker).items():
         n = len(entries)
-        if n < 2:
-            continue
-        prices = [e["price"] for e in entries]
-        fair_list, vig_percent = _remove_vig_n(prices)
+        prices = [odds_after_commission(e["price"], commission_rate, is_exchange) for e in entries]
+        fair_list, margin_percent = remove_margin(prices)
         outcomes_dict = {}
         for i, (e, fair) in enumerate(zip(entries, fair_list)):
             prob = 1.0 / fair if fair > 0 else 0.0
             if n == 2:
                 other = entries[1 - i]
-                opponent_odds = other["raw_price"]
+                opponent_odds = other["price"]
                 opponent_name = other["display_name"]
             else:
                 opponent_odds = None
@@ -205,79 +213,23 @@ def _build_sharp_reference(
             outcomes_dict[e["name"]] = {
                 "fair_odds": fair,
                 "true_probability": prob,
-                "sharp_odds": e["raw_price"],
+                "sharp_odds": e["price"],
                 "opponent_odds": opponent_odds,
                 "opponent_name": opponent_name,
                 "display_name": e["display_name"],
                 "point": e.get("point"),
             }
         references[key] = {
-            "vig_percent": round(vig_percent, 2),
+            "vig_percent": round(margin_percent, 2),
             "outcomes": outcomes_dict,
         }
     return references
 
 
-def _two_way_outcomes(bookmaker: dict) -> Dict[Tuple[str, str], List[dict]]:
-    line_map: Dict[Tuple[str, str], List[dict]] = {}
-    for market in bookmaker.get("markets", []):
-        market_key = market.get("key")
-        if market_key not in ALLOWED_PLUS_EV_MARKETS:
-            continue
-        for outcome in market.get("outcomes", []):
-            price = outcome.get("price")
-            if not price or price <= 1:
-                continue
-            line_key = _line_key(market_key, outcome)
-            if not line_key:
-                continue
-            try:
-                display_price = float(price)
-            except (TypeError, ValueError):
-                continue
-            line_map.setdefault((market_key, line_key), []).append(
-                {
-                    "name": (outcome.get("name") or "").strip().lower(),
-                    "display_name": outcome.get("name") or "",
-                    "price": display_price,
-                    "point": outcome.get("point"),
-                }
-            )
-    return {key: entries for key, entries in line_map.items() if len(entries) == 2}
-
-
-def _all_market_outcomes(bookmaker: dict) -> Dict[Tuple[str, str], List[dict]]:
-    """Like _two_way_outcomes but also includes 3-way markets (e.g. soccer h2h)."""
-    line_map: Dict[Tuple[str, str], List[dict]] = {}
-    for market in bookmaker.get("markets", []):
-        market_key = market.get("key")
-        if market_key not in ALLOWED_PLUS_EV_MARKETS:
-            continue
-        for outcome in market.get("outcomes", []):
-            price = outcome.get("price")
-            if not price or price <= 1:
-                continue
-            line_key = _line_key(market_key, outcome)
-            if not line_key:
-                continue
-            try:
-                display_price = float(price)
-            except (TypeError, ValueError):
-                continue
-            line_map.setdefault((market_key, line_key), []).append(
-                {
-                    "name": (outcome.get("name") or "").strip().lower(),
-                    "display_name": outcome.get("name") or "",
-                    "price": display_price,
-                    "point": outcome.get("point"),
-                }
-            )
-    return {key: entries for key, entries in line_map.items() if len(entries) >= 2}
-
-
 def _estimate_middle_probability(
     middle_integers: List[int], sport_key: str, market_key: str
 ) -> float:
+    """Probability that the final margin/total lands in the middle window (empirical per-point table)."""
     if not middle_integers:
         return 0.0
     lookup_key = f"{sport_key}_{market_key}"
@@ -294,6 +246,7 @@ def _estimate_middle_probability(
 
 
 def _calculate_middle_stakes(odds_a: float, odds_b: float, total_stake: float) -> Tuple[float, float]:
+    """Split the stake so that winning either side alone gives the same net result."""
     if total_stake <= 0 or odds_a <= 1 or odds_b <= 1:
         return 0.0, 0.0
     profit_a = odds_a - 1
@@ -404,10 +357,6 @@ def fetch_odds_for_sport(
         raise ScannerError(f"Failed to parse odds for {sport_key}") from exc
 
 
-OutcomeInfo = Dict[str, object]
-LineMap = Dict[str, Dict[str, OutcomeInfo]]
-
-
 def _line_key(market: str, outcome: dict) -> Optional[str]:
     if market == "h2h":
         return "moneyline"
@@ -425,8 +374,8 @@ def _line_key(market: str, outcome: dict) -> Optional[str]:
 
 def _record_best_prices(
     markets: List[dict], market_key: str, commission_rate: float
-) -> LineMap:
-    lines: LineMap = {}
+) -> Dict[str, Dict[str, dict]]:
+    lines: Dict[str, Dict[str, dict]] = {}
     for book in markets:
         bookmaker = book.get("title") or book.get("key")
         bookmaker_key = book.get("key") or bookmaker
@@ -446,7 +395,7 @@ def _record_best_prices(
                 existing = entry.get(name)
                 display_price = float(price)
                 is_exchange = bookmaker_key in EXCHANGE_KEYS
-                effective_price = _apply_commission(display_price, commission_rate, is_exchange)
+                effective_price = odds_after_commission(display_price, commission_rate, is_exchange)
                 if not existing or effective_price > existing["effective_price"]:
                     entry[name] = {
                         "effective_price": effective_price,
@@ -463,9 +412,11 @@ def _record_best_prices(
 def _collect_market_entries(
     game: dict, market_key: str, stake_total: float, commission_rate: float
 ) -> List[dict]:
+    """Two-way arbitrages: best price per side across books, kept when the stakes lock in a profit."""
     bookmakers = game.get("bookmakers", [])
     markets = [
         {
+            "key": book.get("key"),
             "title": book.get("title") or book.get("key"),
             "markets": book.get("markets", []),
         }
@@ -544,6 +495,7 @@ def _collect_market_entries(
 def _collect_middle_opportunities(
     game: dict, market_key: str, stake_total: float, commission_rate: float
 ) -> List[dict]:
+    """Middles: pairs of spread/total lines from two books leaving a window where both bets win."""
     if market_key not in MIDDLE_MARKETS or stake_total <= 0:
         return []
     bookmakers = game.get("bookmakers", [])
@@ -567,7 +519,7 @@ def _collect_middle_opportunities(
                     continue
                 display_price = float(price)
                 is_exchange = bookmaker_key in EXCHANGE_KEYS
-                effective_price = _apply_commission(display_price, commission_rate, is_exchange)
+                effective_price = odds_after_commission(display_price, commission_rate, is_exchange)
                 offers.append(
                     {
                         "pair_key": f"{bookmaker_key}:{name}:{point_value}",
@@ -604,6 +556,7 @@ def _collect_plus_ev_opportunities(
     bankroll: float,
     kelly_fraction: float,
 ) -> List[dict]:
+    """+EV bets: soft-book prices above the sharp book's margin-free fair price, sized with Kelly."""
     bookmakers = game.get("bookmakers", [])
     sharp_meta = None
     sharp_bookmaker = None
@@ -632,7 +585,7 @@ def _collect_plus_ev_opportunities(
             continue
         bookmaker_title = book.get("title") or key
         is_exchange = key in EXCHANGE_KEYS
-        soft_lines = _all_market_outcomes(book)
+        soft_lines = _group_outcomes_by_line(book)
         if not soft_lines:
             continue
         for (market_key, line_key), entries in soft_lines.items():
@@ -652,15 +605,15 @@ def _collect_plus_ev_opportunities(
                 if has_point and not _points_match(soft_point, sharp_point):
                     continue
                 display_price = entry["price"]
-                effective_price = _apply_commission(display_price, commission_rate, is_exchange)
+                effective_price = odds_after_commission(display_price, commission_rate, is_exchange)
                 fair_odds = sharp_outcome["fair_odds"]
-                gross_edge = _calculate_edge_percent(display_price, fair_odds)
-                net_edge = _calculate_edge_percent(effective_price, fair_odds)
+                gross_edge = edge_percent(display_price, fair_odds)
+                net_edge = edge_percent(effective_price, fair_odds)
                 if net_edge < min_edge_percent:
                     continue
                 true_probability = sharp_outcome["true_probability"]
-                ev_per_100 = _calculate_ev(true_probability, effective_price, 100.0)
-                full_pct, fraction_pct, recommended = _kelly_stake(
+                ev_per_100 = expected_value(true_probability, effective_price, 100.0)
+                full_pct, fraction_pct, recommended = kelly_stake(
                     true_probability, effective_price, bankroll, kelly_fraction
                 )
                 opportunity = {
@@ -872,6 +825,7 @@ def _build_middle_entry(
 
 
 def _calculate_stakes(outcomes: List[dict], stake_total: float, price_field: str) -> dict:
+    """Split ``stake_total`` in proportion to 1/odds so every outcome pays the same amount."""
     if stake_total <= 0 or len(outcomes) < 2:
         return {
             "total": 0.0,
@@ -1060,6 +1014,65 @@ def _deduplicate_plus_ev(opportunities: List[dict]) -> List[dict]:
     return list(best_by_key.values())
 
 
+def analyze_events(
+    events: Sequence[dict],
+    stake_amount: float = 100.0,
+    commission_rate: float = DEFAULT_COMMISSION,
+    sharp_book: str = DEFAULT_SHARP_BOOK,
+    min_edge_percent: float = MIN_EDGE_PERCENT,
+    bankroll: float = DEFAULT_BANKROLL,
+    kelly_fraction: float = DEFAULT_KELLY_FRACTION,
+) -> dict:
+    """Find arbitrages, middles and +EV bets in already-fetched events (no network call).
+
+    ``events`` use The Odds API v4 ``/odds`` format, each with a ``sport_key`` field added.
+    Returns ``{"arbitrage", "middles", "plus_ev"}`` lists, each sorted best first, plus
+    ``total_guaranteed_profit`` summed over the arbitrages.
+    """
+    sharp_priority = _sharp_priority(sharp_book or DEFAULT_SHARP_BOOK)
+    arb_opportunities: List[dict] = []
+    middle_opportunities: List[dict] = []
+    plus_ev_opportunities: List[dict] = []
+    total_profit = 0.0
+
+    for game in events:
+        sport_key = game.get("sport_key") or ""
+        game.setdefault("sport_display", SPORT_DISPLAY_NAMES.get(sport_key, sport_key))
+        markets = markets_for_sport(sport_key)
+        for market_key in markets:
+            new_entries = _collect_market_entries(game, market_key, stake_amount, commission_rate)
+            for entry in new_entries:
+                total_profit += entry["stakes"].get("guaranteed_profit", 0.0)
+            arb_opportunities.extend(new_entries)
+            if market_key in MIDDLE_MARKETS:
+                middle_opportunities.extend(
+                    _collect_middle_opportunities(game, market_key, stake_amount, commission_rate)
+                )
+        plus_ev_opportunities.extend(
+            _collect_plus_ev_opportunities(
+                game,
+                markets,
+                sharp_priority,
+                commission_rate,
+                min_edge_percent,
+                bankroll,
+                kelly_fraction,
+            )
+        )
+
+    arb_opportunities.sort(key=lambda x: x["roi_percent"], reverse=True)
+    middle_opportunities.sort(key=lambda x: x["ev_percent"], reverse=True)
+    middle_opportunities = _deduplicate_middles(middle_opportunities)
+    plus_ev_opportunities = _deduplicate_plus_ev(plus_ev_opportunities)
+    plus_ev_opportunities.sort(key=lambda x: x.get("edge_percent", 0), reverse=True)
+    return {
+        "arbitrage": arb_opportunities,
+        "middles": middle_opportunities,
+        "plus_ev": plus_ev_opportunities,
+        "total_guaranteed_profit": total_profit,
+    }
+
+
 def run_scan(
     api_key: str,
     sports: Optional[List[str]] = None,
@@ -1072,6 +1085,7 @@ def run_scan(
     bankroll: float = DEFAULT_BANKROLL,
     kelly_fraction: float = DEFAULT_KELLY_FRACTION,
 ) -> dict:
+    """Fetch live odds from The Odds API and return the JSON payload consumed by the web UI."""
     if not api_key:
         return {"success": False, "error": "API key is required", "error_code": 400}
     if stake_amount is None or stake_amount <= 0:
@@ -1120,15 +1134,11 @@ def run_scan(
             "commission_rate": commission_rate,
         }
 
-    arb_opportunities: List[dict] = []
-    middle_opportunities: List[dict] = []
-    plus_ev_opportunities: List[dict] = []
     events_scanned = 0
-    total_profit = 0.0
     sport_errors: List[dict] = []
     successful_sports = 0
     api_calls_used = 0
-    sharp_priority = _sharp_priority(sharp_book or DEFAULT_SHARP_BOOK)
+    all_events: List[dict] = []
 
     for sport in filtered:
         sport_key = sport.get("key")
@@ -1153,35 +1163,21 @@ def run_scan(
         for game in events:
             game["sport_key"] = sport_key
             game["sport_title"] = sport.get("title")
-            game["sport_display"] = SPORT_DISPLAY_NAMES.get(sport_key, sport_key)
-            for market_key in markets:
-                new_entries = _collect_market_entries(
-                    game, market_key, stake_amount, commission_rate
-                )
-                for entry in new_entries:
-                    total_profit += entry["stakes"].get("guaranteed_profit", 0.0)
-                arb_opportunities.extend(new_entries)
-                if market_key in MIDDLE_MARKETS:
-                    middle_entries = _collect_middle_opportunities(
-                        game, market_key, stake_amount, commission_rate
-                    )
-                    middle_opportunities.extend(middle_entries)
-            plus_entries = _collect_plus_ev_opportunities(
-                game,
-                markets,
-                sharp_priority,
-                commission_rate,
-                min_edge_percent,
-                bankroll,
-                kelly_fraction,
-            )
-            plus_ev_opportunities.extend(plus_entries)
+        all_events.extend(events)
 
-    arb_opportunities.sort(key=lambda x: x["roi_percent"], reverse=True)
-    middle_opportunities.sort(key=lambda x: x["ev_percent"], reverse=True)
-    middle_opportunities = _deduplicate_middles(middle_opportunities)
-    plus_ev_opportunities = _deduplicate_plus_ev(plus_ev_opportunities)
-    plus_ev_opportunities.sort(key=lambda x: x.get("edge_percent", 0), reverse=True)
+    found = analyze_events(
+        all_events,
+        stake_amount=stake_amount,
+        commission_rate=commission_rate,
+        sharp_book=sharp_book,
+        min_edge_percent=min_edge_percent,
+        bankroll=bankroll,
+        kelly_fraction=kelly_fraction,
+    )
+    arb_opportunities = found["arbitrage"]
+    middle_opportunities = found["middles"]
+    plus_ev_opportunities = found["plus_ev"]
+    total_profit = found["total_guaranteed_profit"]
     arb_summary = _summaries(
         arb_opportunities, successful_sports, events_scanned, total_profit, api_calls_used
     )
@@ -1223,64 +1219,3 @@ def run_scan(
         "regions": normalized_regions,
         "commission_rate": commission_rate,
     }
-def _remove_vig(odds_a: float, odds_b: float) -> Tuple[float, float, float]:
-    """Return fair odds for both sides plus vig percent."""
-    if odds_a <= 1 or odds_b <= 1:
-        return odds_a, odds_b, 0.0
-    implied_a = 1 / odds_a
-    implied_b = 1 / odds_b
-    total_implied = implied_a + implied_b
-    if total_implied <= 0:
-        return odds_a, odds_b, 0.0
-    true_prob_a = implied_a / total_implied
-    true_prob_b = implied_b / total_implied
-    fair_a = 1 / true_prob_a if true_prob_a else odds_a
-    fair_b = 1 / true_prob_b if true_prob_b else odds_b
-    vig_percent = max(0.0, (total_implied - 1.0) * 100)
-    return fair_a, fair_b, vig_percent
-
-
-def _remove_vig_n(prices: List[float]) -> Tuple[List[float], float]:
-    """Return fair odds for N outcomes plus vig percent."""
-    if not prices or any(p <= 1 for p in prices):
-        return prices, 0.0
-    implied = [1.0 / p for p in prices]
-    total = sum(implied)
-    if total <= 0:
-        return prices, 0.0
-    fair = [total / i for i in implied]
-    vig_percent = max(0.0, (total - 1.0) * 100)
-    return fair, vig_percent
-
-
-def _calculate_edge_percent(soft_odds: float, fair_odds: float) -> float:
-    if fair_odds <= 0:
-        return 0.0
-    return (soft_odds / fair_odds - 1.0) * 100
-
-
-def _calculate_ev(true_probability: float, odds: float, stake: float) -> float:
-    true_probability = max(0.0, min(true_probability, 1.0))
-    win_amount = stake * (odds - 1.0)
-    lose_amount = stake
-    value = (true_probability * win_amount) - ((1.0 - true_probability) * lose_amount)
-    return round(value, 2)
-
-
-def _kelly_stake(
-    true_probability: float, odds: float, bankroll: float, fraction: float
-) -> Tuple[float, float, float]:
-    if bankroll <= 0 or odds <= 1:
-        return 0.0, 0.0
-    p = max(0.0, min(true_probability, 1.0))
-    q = 1.0 - p
-    b = odds - 1.0
-    if b <= 0:
-        return 0.0, 0.0
-    kelly_fraction = (b * p - q) / b
-    if kelly_fraction <= 0:
-        return 0.0, 0.0
-    fraction = max(0.0, min(fraction, 1.0))
-    recommended_fraction = kelly_fraction * fraction
-    stake = round(bankroll * recommended_fraction, 2)
-    return round(kelly_fraction * 100, 2), round(recommended_fraction * 100, 2), stake

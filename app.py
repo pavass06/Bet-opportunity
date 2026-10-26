@@ -1,3 +1,5 @@
+"""Flask entry point: serves the dashboard and the JSON endpoints (scan, history, results, export)."""
+
 from __future__ import annotations
 
 import argparse

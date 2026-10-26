@@ -1,7 +1,17 @@
+# Secrets: only the template is versioned
 .env
+.env.*
+!.env.example
+
+# Local data (SQLite history)
 data/
+*.db
+
+# Python
 __pycache__/
 *.pyc
-.DS_Store
+.pytest_cache/
 venv/
 .venv/
+
+.DS_Store
