@@ -208,6 +208,7 @@ EDGE_BANDS = [
 
 
 def markets_for_sport(sport_key: str) -> list[str]:
+    """Markets requested from The Odds API for a sport (h2h, spreads, totals for every supported sport)."""
     if sport_key in AMERICAN_SPORTS:
         return AMERICAN_MARKETS
     if sport_key in SOCCER_SPORTS:

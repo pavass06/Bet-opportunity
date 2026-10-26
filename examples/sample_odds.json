@@ -1,0 +1,105 @@
+[
+  {
+    "id": "example-soccer-1",
+    "sport_key": "soccer_epl",
+    "sport_title": "EPL",
+    "commence_time": "2026-11-07T15:00:00Z",
+    "home_team": "Northport FC",
+    "away_team": "Eastvale United",
+    "bookmakers": [
+      {
+        "key": "pinnacle",
+        "title": "Pinnacle",
+        "markets": [
+          {"key": "h2h", "outcomes": [
+            {"name": "Northport FC", "price": 2.10},
+            {"name": "Draw", "price": 3.50},
+            {"name": "Eastvale United", "price": 3.60}
+          ]},
+          {"key": "totals", "outcomes": [
+            {"name": "Over", "price": 1.95, "point": 2.5},
+            {"name": "Under", "price": 1.93, "point": 2.5}
+          ]}
+        ]
+      },
+      {
+        "key": "winamax_fr",
+        "title": "Winamax (FR)",
+        "markets": [
+          {"key": "h2h", "outcomes": [
+            {"name": "Northport FC", "price": 2.22},
+            {"name": "Draw", "price": 3.30},
+            {"name": "Eastvale United", "price": 3.30}
+          ]},
+          {"key": "totals", "outcomes": [
+            {"name": "Over", "price": 1.85, "point": 2.5},
+            {"name": "Under", "price": 1.95, "point": 2.5}
+          ]}
+        ]
+      },
+      {
+        "key": "unibet_fr",
+        "title": "Unibet (FR)",
+        "markets": [
+          {"key": "h2h", "outcomes": [
+            {"name": "Northport FC", "price": 2.05},
+            {"name": "Draw", "price": 3.40},
+            {"name": "Eastvale United", "price": 3.75}
+          ]}
+        ]
+      }
+    ]
+  },
+  {
+    "id": "example-nba-1",
+    "sport_key": "basketball_nba",
+    "sport_title": "NBA",
+    "commence_time": "2026-11-08T00:30:00Z",
+    "home_team": "Harbor City Hawks",
+    "away_team": "Mesa Ridge Miners",
+    "bookmakers": [
+      {
+        "key": "pinnacle",
+        "title": "Pinnacle",
+        "markets": [
+          {"key": "h2h", "outcomes": [
+            {"name": "Harbor City Hawks", "price": 1.95},
+            {"name": "Mesa Ridge Miners", "price": 1.95}
+          ]},
+          {"key": "spreads", "outcomes": [
+            {"name": "Harbor City Hawks", "price": 1.94, "point": -1.5},
+            {"name": "Mesa Ridge Miners", "price": 1.94, "point": 1.5}
+          ]}
+        ]
+      },
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {"key": "h2h", "outcomes": [
+            {"name": "Harbor City Hawks", "price": 2.06},
+            {"name": "Mesa Ridge Miners", "price": 1.80}
+          ]},
+          {"key": "spreads", "outcomes": [
+            {"name": "Harbor City Hawks", "price": 1.91, "point": -1.5},
+            {"name": "Mesa Ridge Miners", "price": 1.91, "point": 1.5}
+          ]}
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {"key": "h2h", "outcomes": [
+            {"name": "Harbor City Hawks", "price": 1.83},
+            {"name": "Mesa Ridge Miners", "price": 2.00}
+          ]},
+          {"key": "spreads", "outcomes": [
+            {"name": "Harbor City Hawks", "price": 1.91, "point": -3.5},
+            {"name": "Mesa Ridge Miners", "price": 1.91, "point": 3.5}
+          ]}
+        ]
+      }
+    ]
+  }
+]

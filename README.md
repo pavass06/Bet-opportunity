@@ -1,166 +1,163 @@
 # Bet-opportunity (Edge Scanner)
 
-**Arbitrage • Middles • +EV • Kelly • CLV**
+> **En bref (FR).** Outil Python qui compare les cotes de nombreux bookmakers (The Odds API) pour repérer
+> trois types de situations : arbitrages, « middles » et paris à espérance positive (+EV). La probabilité
+> « juste » est estimée en retirant la marge d'un bookmaker de référence (Pinnacle), puis la mise est
+> calibrée avec le critère de Kelly (plein ou fractionnaire). Le dépôt contient des tests unitaires, un
+> exemple reproductible sans clé d'API et une simulation Monte Carlo de bankroll. Projet de recherche et
+> de démonstration : ce n'est pas un conseil de pari et aucun gain n'est promis.
 
-Sports betting scanner that compares odds across bookmakers (via [The Odds API](https://the-odds-api.com/)) to detect arbitrage, middles and positive expected value (+EV) bets, then tracks signal quality over time (CLV, Brier score, realized ROI).
+**Arbitrage · Middles · +EV · Kelly sizing · CLV tracking** — Python, Flask, SQLite, pytest.
 
-> Fork of an open source sports arbitrage scanner, extended with: +EV with sharp-book de-vigging, Kelly sizing, a parlay builder, SQLite persistence, and CLV / results tracking.
+## The problem
 
-## Features
+Bookmakers quote different prices for the same event. Two questions follow:
 
-| Tab | What it finds | Risk profile |
+1. **Is a price mispriced?** Only relative to an estimate of the true probability, which nobody observes.
+2. **If so, how much should be staked?** Betting too much on a real but small edge still leads to ruin.
+
+This project answers (1) with a market-based estimate (a sharp bookmaker's margin-free price) and (2) with
+the Kelly criterion, and keeps a history of every signal so its quality can be checked afterwards (CLV,
+Brier score, realised ROI).
+
+## Method
+
+| Step | Formula | Code |
 |---|---|---|
-| **Arbitrage** | Guaranteed profit by betting every outcome across different books | Near zero (execution risk) |
-| **Middles** | Line gaps between two books where both bets can win | High variance, +EV if the probability is right |
-| **+EV** | Soft book odds better than the sharp book's fair price | Medium variance, profit over volume |
-| **Builder** | Parlays built from the last scan's +EV bets | High variance |
-| **History** | Tracked bets: CLV, W/L results, realized ROI, Brier score | Validation tool |
+| Implied probability of decimal odds `o` | `1 / o` | `odds_math.implied_probability` |
+| Bookmaker margin of a market | `Σ 1/o_i − 1` | `odds_math.remove_margin` |
+| Fair odds (proportional de-vig) | `p_i = (1/o_i) / Σ 1/o_j`, fair odds `= 1/p_i` | `odds_math.remove_margin` |
+| Edge of a soft-book price | `o / o_fair − 1` | `odds_math.edge_percent` |
+| Expected value per unit | `p · (o − 1) − (1 − p)` | `odds_math.expected_value` |
+| Full Kelly fraction | `f* = (p·b − q) / b`, `b = o − 1`, `q = 1 − p` | `odds_math.kelly_fraction` |
+| Fractional Kelly stake | `k · f* · bankroll`, `k ∈ {1, ½, ¼, 1/10}` | `odds_math.kelly_stake` |
+| Exchange commission | `1 + (o − 1)(1 − c)` | `odds_math.odds_after_commission` |
 
-## Setup
+The three detectors live in `scanner.py`:
+
+- **+EV**: Pinnacle (or Betfair Exchange / Matchbook) is the reference. Its margin is removed over the whole
+  market (2-way, or 3-way home/draw/away for soccer) and every soft-book price above the fair price by at
+  least `MIN_EDGE_PERCENT` (1% by default) is reported with its EV and Kelly stake.
+- **Arbitrage**: best price per side across books; if `Σ 1/o_best < 1`, stakes proportional to `1/o`
+  lock in the same payout whatever the result.
+- **Middles**: two spread/total lines from different books that leave a window where both bets win. The
+  probability of landing in the window comes from a per-point table by sport (`config.py`), with NFL key
+  numbers (3, 7, 10…) weighted separately.
+
+**Assumptions.** The sharp price is an unbiased estimate of the true probability; the proportional
+method spreads the margin evenly (it ignores the favourite–longshot bias, see Limits); outcomes of
+different bets are independent; there are no pushes/voids (a soccer draw on the selected side counts as a
+loss in the history statistics).
+
+## Reproducible example (no API key needed)
+
+`examples/sample_odds.json` contains **synthetic** odds for two fictional matches, in The Odds API v4
+format. The offline pipeline `scanner.analyze_events` runs on it:
+
+```bash
+python examples/run_example.py
+```
+
+```
++EV bets (sharp reference: Pinnacle, margin removed proportionally, quarter Kelly, bankroll 1000)
+  Mesa Ridge Miners vs Harbor City Hawks   Harbor City Hawks    DraftKings    odds 2.06  fair 2.000  edge +3.00%  EV/100 +3.00  full Kelly 2.83%  stake 7.08
+  Eastvale United vs Northport FC          Northport FC         Winamax (FR)  odds 2.22  fair 2.183  edge +1.68%  EV/100 +1.68  full Kelly 1.38%  stake 3.44
+
+Arbitrages (stake 100)
+  Mesa Ridge Miners vs Harbor City Hawks   h2h      ROI +1.48%  [Harbor City Hawks @ 2.06 (DraftKings), Mesa Ridge Miners @ 2.00 (FanDuel)]
+
+Middles (stake 100)
+  Mesa Ridge Miners vs Harbor City Hawks   Harbor City Hawks by 2-3     P(middle) 5.0%  EV +1.05%
+```
+
+Reading the first line: Pinnacle prices both sides at 1.95, i.e. a 2.6% margin and a fair price of 2.00.
+DraftKings offers 2.06, a 3% edge. Full Kelly would stake 2.83% of the bankroll; quarter Kelly stakes 0.71%.
+The numbers are illustrative, not observed market data.
+
+## Bankroll simulation: full vs fractional Kelly
+
+`examples/simulate_bankroll.py` runs 5,000 Monte Carlo paths of 1,000 bets (odds drawn in [1.7, 3.0], fixed
+seed). The model always *believes* it has a +3% edge. Two worlds use the same random draws: the edge is real,
+or the edge was pure estimation error (true edge 0%).
+
+![Bankroll simulation](docs/bankroll_simulation.png)
+
+| World | Sizing | Median final bankroll | P(final < start) | P(max drawdown ≥ 50%) |
+|---|---|---|---|---|
+| Real edge +3% | Full Kelly | 1.48× | 32.8% | 65.3% |
+| Real edge +3% | Half Kelly | 1.33× | 25.9% | 7.4% |
+| Real edge +3% | Quarter Kelly | 1.18× | 22.5% | 0.0% |
+| Real edge 0% | Full Kelly | 0.71× | 64.7% | 85.0% |
+| Real edge 0% | Half Kelly | 0.92× | 57.5% | 23.9% |
+| Real edge 0% | Quarter Kelly | 0.98× | 53.2% | 0.3% |
+
+Takeaways: even with a genuine 3% edge, 22–33% of paths still end below their start after 1,000 bets, and
+full Kelly halves the bankroll at some point in two paths out of three. When the estimated edge is wrong, the
+median full-Kelly bankroll falls to 0.71× while quarter Kelly stays close to 1×. This is why the app defaults
+to quarter Kelly.
+
+## Honest limits
+
+- **Model risk.** The edge is an *estimate*: it is only as good as the assumption that the sharp book is
+  right. Proportional de-vigging ignores the favourite–longshot bias (methods such as Shin's are on the
+  roadmap). A 1–3% edge is of the same order as these estimation errors.
+- **Variance.** Small edges need hundreds to thousands of bets before realised ROI means anything; this is
+  why the app also tracks closing line value (CLV), a faster but still noisy signal.
+- **Execution.** Prices move between detection and placement; the Odds API snapshot can be stale; an
+  arbitrage with one leg filled and the other gone is a plain bet.
+- **Bookmaker rules.** Soft bookmakers routinely limit or close accounts that win or that bet like
+  arbitrageurs, and their terms allow voiding "obvious errors". Any long-run edge is therefore capped by how
+  long accounts stay open.
+- **Middles.** The window probabilities are rough per-sport averages, not a fitted model.
+- **Legal.** Online betting is regulated differently in every country (in France only ANJ-licensed operators
+  are legal). Check local law before using any of this with real money.
+
+**This is a research and educational project, not betting advice. Nothing here promises a profit; sports
+betting can lose money.**
+
+## Run it
+
+Requires Python 3.9+.
 
 ```bash
 git clone https://github.com/pavass06/Bet-opportunity.git
 cd Bet-opportunity
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python app.py
+pip install -r requirements-dev.txt        # app + tests + simulation
+
+pytest                                     # unit tests (no network)
+python examples/run_example.py             # offline example on synthetic odds
+python examples/simulate_bankroll.py       # regenerates docs/bankroll_simulation.png
 ```
 
-Your browser opens automatically (port 5000, falling back to 5050 or 8000; on macOS port 5000 is often taken by AirPlay, so the app switches to 5050).
+Live scanning needs a free key from [the-odds-api.com](https://the-odds-api.com/) (500 requests/month on the
+free tier; one full scan of the 11 default sports uses 12 requests):
 
-**API key:** free at [the-odds-api.com](https://the-odds-api.com/) (500 requests/month). Enter it in the UI, or create a `.env` file at the project root:
-
-```
-ODDS_API_KEY=your_api_key_here
-```
-
-The `.env` file is required for automatic CLV tracking (the background scheduler reads the key at startup).
-
----
-
-## The theory in short
-
-### Implied probability and the vig
-
-A decimal price `c` implies a probability of `1/c`. On a two-way market a book might show 1.91 / 1.91: 52.4% + 52.4% = **104.8%**. The extra 4.8% is the bookmaker's margin (the *vig*), which is how it wins in the long run.
-
-### EV: expected value
-
-Expected value is the sum of each possible outcome weighted by its probability. For a 1 unit stake:
-
-| Event | Probability | Net result |
-|---|---|---|
-| Bet wins | `p` | `+(odds − 1)` |
-| Bet loses | `1 − p` | `−1` |
-
-```
-EV = p × (odds − 1) − (1 − p)  =  p × odds − 1
+```bash
+cp .env.example .env        # then put your key in ODDS_API_KEY (the .env file is git-ignored)
+python app.py               # opens the dashboard in the browser (port 5000, else 5050 / 8000)
 ```
 
-A bet is +EV when **`p × odds > 1`**, i.e. when the price is above the fair price `1/p`. Example: odds 2.20 and a true probability of 50% give EV = +0.10 per unit staked. For a stake `B`, everything scales by `B`.
+The key can also be typed in the UI, but the background job that fetches closing odds for CLV only reads it
+from `.env`. No key is stored in the code or in the database.
 
-A +EV bet can still lose: EV is an average over many bets. The whole difficulty is knowing `p`.
-
-### How `p` is estimated: the sharp book
-
-Nobody knows the true probability. Instead, a very accurate book is used as the reference (Pinnacle by default, or Betfair Exchange / Matchbook):
-
-1. Remove its vig (proportional method: divide each implied probability by their sum).
-2. This gives the **fair odds**.
-3. Compare against soft books (DraftKings, FanDuel, Winamax, Unibet, etc.).
+## Project layout
 
 ```
-edge % = (soft_odds / fair_odds − 1) × 100
+odds_math.py          pure pricing functions (margin removal, edge, EV, Kelly, commission)
+scanner.py            The Odds API client + analyze_events(): arbitrage, middles, +EV detection
+config.py             sports, markets, bookmakers, default parameters
+db.py                 SQLite history: +EV signals, closing odds, CLV, W/L results, Brier score
+scheduler.py          background job fetching Pinnacle closing odds every 30 min
+app.py                Flask server and JSON endpoints
+templates/, static/   single-page dashboard (Arbitrage / Middles / +EV / Builder / History tabs)
+examples/             synthetic sample odds, offline example, Monte Carlo simulation
+tests/                pytest suite
 ```
 
-This is *value betting*. The assumption is that the sharp book is right and the soft book is wrong.
+## Credits and licence
 
-### Kelly criterion
-
-EV tells you **whether** to bet, Kelly tells you **how much**. It maximizes the compound growth of the bankroll:
-
-```
-f* = (p × b − q) / b      with b = odds − 1 and q = 1 − p
-```
-
-This is the EV per unit (`p×b − q`) divided by `b`: for the same edge, longer odds are riskier, so the stake is smaller.
-
-Why not just maximize EV? Because it would tell you to stake your whole bankroll, which leads to ruin: a bankroll grows by **multiplication**, not addition. Kelly maximizes the geometric growth rate:
-
-```
-g(f) = (1 + f·b)^p × (1 − f)^q          (equivalent to maximizing p·ln(1+f·b) + q·ln(1−f))
-```
-
-This curve is bell-shaped: under-betting costs little growth, over-betting (beyond `2f*`) loses money despite a positive edge. Since `p` is only an estimate, **fractional Kelly** is used: ½, **¼ (default)** or 1/10.
-
-### Arbitrage
-
-No assumption on `p`. If the sum of the implied probabilities of the best price on each outcome is **below 100%**, you stake every outcome in proportion and win whatever happens.
-
-Example: 2.10 on team 1 at book A, 2.10 on team 2 at book B → `1/2.1 + 1/2.1 = 95.2%` → about 5% guaranteed profit.
-
-Practical risks: odds move before the second leg is placed, rules differ between books, and winning accounts get limited. Exchanges charge a commission, which the app deducts (net and gross ROI are both shown).
-
-### Middle
-
-Two books offer different lines on the same market, e.g. Team X **−2.5** at A and Team Y **+4.5** at B. If X wins by 3 or 4 points, both bets win. Outside that window only one wins and you lose the vig (~5%) on the other.
-
-```
-EV = P(middle) × double_win − (1 − P(middle)) × single_loss
-```
-
-`P(middle)` comes from historical margin distributions per sport (`PROBABILITY_PER_INTEGER` in `config.py`). In the NFL, **key numbers** (3, 7, 10, 6, 14…) are very frequent margins: a middle spanning them is worth much more than one of the same width. Profile: small frequent loss, rare big win, profitable only if the estimated probability is right.
-
-### CLV (Closing Line Value)
-
-Compare the price you took with Pinnacle's **closing** price just before the event starts:
-
-```
-CLV % = (taken_odds / closing_odds − 1) × 100
-```
-
-The closing line is the best public estimate of the true probability. A positive average CLV over a few dozen bets points to a real edge, whereas realized ROI needs thousands of bets to be reliable.
-
-### Parlays (Builder)
-
-Odds and probabilities multiply, **and so do the margins**. A parlay is only worthwhile if every leg is +EV. The Builder uses a single book per ticket, excludes two legs from the same match (correlation), and sorts by compound edge.
-
----
-
-## Tracking and validation
-
-- Every detected +EV bet is saved to SQLite (`data/edge_scanner.db`), deduplicated per `(event, market, outcome, book)` and per day.
-- An APScheduler job (every 30 min) fetches Pinnacle's closing odds for events starting within the hour and computes CLV.
-- The **History** tab lets you record W/L by hand and shows: actual vs expected win rate, flat-stake realized ROI, and the **Brier score** (`AVG((1/fair_odds − result)²)`, good if < 0.25).
-- `/export` downloads the full history as CSV.
-
-Assumption: there is no push/void state; a draw (soccer h2h) on the selected outcome counts as a loss.
-
-## API usage
-
-A full scan of 11 sports uses 12 requests (1 for the sports list + 1 per sport). The free tier (500/month) allows about 40 full scans. The EU region is always included so that Pinnacle is available as the sharp reference.
-
-## Configuration (UI)
-
-Regions (US, US2, UK, EU, AU), sports, stake, exchange commission, minimum middle gap, minimum +EV edge, sharp reference book, Kelly fraction, bankroll, decimal/American odds, dark/light theme.
-
-## Tech stack
-
-Python 3.11+, Flask, vanilla HTML/CSS/JS, SQLite, APScheduler, The Odds API.
-
-## Roadmap
-
-- Telegram alerts
-- UI auto-refresh
-- Near-arbs (sum < 103%)
-- Shin de-vigging method
-- Odds freshness filters and a confidence score
-- Polymarket / Kalshi as reference sources
-
-## Disclaimer
-
-For educational and research purposes. Sports betting involves risk of loss, probability estimates can be wrong, and bookmakers may limit winning accounts. Never stake more than you can afford to lose.
-
-## License
-
-MIT. Based on an original open source project, see `LICENSE`.
+Started as a fork of Adrian Boniface's open-source sports arbitrage scanner (MIT, see `LICENSE`): the
+original provided the arbitrage, middles and first +EV scanner. Added in this fork: 3-way markets and EU
+books, SQLite persistence with CLV tracking, manual results with Brier score and realised ROI, a parlay
+builder, the pure `odds_math` module, the offline example, the bankroll simulation and the test suite.
